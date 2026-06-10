@@ -13,6 +13,7 @@ import type {
   ISeriesApi,
   CandlestickData,
   Time,
+  IPriceLine,
 } from "lightweight-charts";
 import { useStockStore } from "@/store/useStockStore";
 import { generateMockOHLCV, Timeframe } from "@/data/mockOHLCV";
@@ -48,8 +49,15 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
   
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   
+  // Custom price line and caching refs
+  const customPriceLineRef = useRef<IPriceLine | null>(null);
+  const lastBarRef = useRef<{ time: number; open: number; high: number; low: number; close: number } | null>(null);
+
   const theme = useStockStore((s) => s.theme);
   const isRefreshing = useStockStore((s) => s.isRefreshing);
+  
+  // Read calibrated real-time price from the Zustand store
+  const currentPrice = useStockStore((s) => s.stocks[symbol]?.price);
 
   const getChartColors = useCallback(
     (isDark: boolean) => ({
@@ -82,6 +90,20 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
         color: bar.close >= bar.open ? colors.volumeUp : colors.volumeDown,
       }));
       volumeSeries.setData(volumeData);
+
+      // Cache the last mock bar for real-time updates
+      const lastBar = bars[bars.length - 1];
+      const lastBarTime = typeof lastBar.time === "number"
+        ? lastBar.time
+        : Math.floor(new Date(lastBar.time as unknown as string).getTime() / 1000);
+
+      lastBarRef.current = {
+        time: lastBarTime,
+        open: lastBar.open,
+        high: lastBar.high,
+        low: lastBar.low,
+        close: lastBar.close,
+      };
     },
     [symbol, timeframe]
   );
@@ -97,7 +119,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       const colors = getChartColors(isDark);
 
       try {
-        console.log(`[Alpha Vantage Raw Data] Fetching history candles for: ${symbol} (${timeframe})`);
+        console.log(`[Candle API] Fetching history candles for: ${symbol} (${timeframe})`);
         
         const res = await fetch(
           `/api/stock/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
@@ -106,7 +128,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
 
         if (json.success && Array.isArray(json.result) && json.result.length > 0) {
           const rawCandles = json.result as AlphaVantageCandle[];
-          console.log("[Alpha Vantage Raw Data] Received raw candle list:", rawCandles);
+          console.log("[Candle API] Received raw candle list:", rawCandles);
 
           // Standardize dates to Unix seconds (TradingView expected format)
           const formattedBars = rawCandles.map((bar: AlphaVantageCandle) => ({
@@ -130,14 +152,28 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
           }));
           volumeSeries.setData(volumeData);
           chart.timeScale().fitContent();
+
+          // Cache the last historical bar for real-time updates reference
+          const lastBar = formattedBars[formattedBars.length - 1];
+          const lastBarTime = typeof lastBar.time === "number"
+            ? lastBar.time
+            : Math.floor(new Date(lastBar.time as unknown as string).getTime() / 1000);
+
+          lastBarRef.current = {
+            time: lastBarTime,
+            open: lastBar.open,
+            high: lastBar.high,
+            low: lastBar.low,
+            close: lastBar.close,
+          };
         } else {
           console.warn(
-            `[Alpha Vantage Raw Data] History API failed or returned empty: ${json.error || "No data"}. Employing mock fallback.`
+            `[Candle API] History API failed or returned empty: ${json.error || "No data"}. Employing mock fallback.`
           );
           loadFallbackMockData(candleSeries, volumeSeries, colors);
         }
       } catch (err) {
-        console.error("[Alpha Vantage Raw Data] Failed to load history candles from backend:", err);
+        console.error("[Candle API] Failed to load history candles from backend:", err);
         loadFallbackMockData(candleSeries, volumeSeries, colors);
       }
     },
@@ -198,7 +234,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       handleScale: { mouseWheel: true, pinch: true },
     });
 
-    // Candlestick series (v5 API)
+    // Candlestick series (v5 API) - Hide default price line to prevent history sticking
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: colors.upColor,
       downColor: colors.downColor,
@@ -206,6 +242,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       borderUpColor: colors.upColor,
       wickDownColor: colors.downColor,
       wickUpColor: colors.upColor,
+      priceLineVisible: false, 
     });
 
     // Volume histogram series (v5 API)
@@ -265,6 +302,8 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       chartRef.current = null;
       seriesRef.current = null;
       volumeSeriesRef.current = null;
+      customPriceLineRef.current = null; // Clean up the custom price line reference
+      lastBarRef.current = null; // Clean up last bar cache
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, timeframe]);
@@ -323,6 +362,85 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       loadHistoryData(chart, candleSeries, volumeSeries);
     }
   }, [isRefreshing, loadHistoryData]);
+
+  // Manage custom horizontal price line tracking the real-time calibrated price
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || currentPrice === undefined || currentPrice === null) return;
+
+    if (!customPriceLineRef.current) {
+      customPriceLineRef.current = series.createPriceLine({
+        price: currentPrice,
+        color: "#ef4444", // Red horizontal line matching the Liquid Glass theme
+        lineWidth: 1,
+        lineStyle: 2, // Dashed
+        axisLabelVisible: true,
+        title: "Live",
+      });
+    } else {
+      customPriceLineRef.current.applyOptions({
+        price: currentPrice,
+      });
+    }
+  }, [currentPrice]);
+
+  // Manage real-time candlestick updates (Today's floating bar ticking close price)
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series || currentPrice === undefined || currentPrice === null) return;
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    
+    // Calculate starting Unix bound for the current timeframe bar
+    const getBarTime = (tf: string, timeSeconds: number) => {
+      switch (tf) {
+        case "1m": return Math.floor(timeSeconds / 60) * 60;
+        case "5m": return Math.floor(timeSeconds / 300) * 300;
+        case "15m": return Math.floor(timeSeconds / 900) * 900;
+        case "1h": return Math.floor(timeSeconds / 3600) * 3600;
+        case "4h": return Math.floor(timeSeconds / 14400) * 14400;
+        case "1d":
+        default:
+          return Math.floor(timeSeconds / 86400) * 86400;
+      }
+    };
+
+    const targetTime = getBarTime(timeframe, nowSeconds);
+    const lastBar = lastBarRef.current;
+    let updatedBar: CandlestickData<Time>;
+
+    if (lastBar && lastBar.time === targetTime) {
+      // Update the existing real-time bar with the new high/low and close ticks
+      updatedBar = {
+        time: targetTime as Time,
+        open: lastBar.open,
+        high: Math.max(lastBar.high, currentPrice),
+        low: Math.min(lastBar.low, currentPrice),
+        close: currentPrice,
+      };
+    } else {
+      // Append a brand new real-time bar for the new interval session
+      const openPrice = lastBar ? lastBar.close : currentPrice;
+      updatedBar = {
+        time: targetTime as Time,
+        open: openPrice,
+        high: Math.max(openPrice, currentPrice),
+        low: Math.min(openPrice, currentPrice),
+        close: currentPrice,
+      };
+    }
+
+    series.update(updatedBar);
+    
+    // Cache the updated bar state for subsequent ticks comparison
+    lastBarRef.current = {
+      time: targetTime,
+      open: updatedBar.open,
+      high: updatedBar.high,
+      low: updatedBar.low,
+      close: updatedBar.close,
+    };
+  }, [currentPrice, timeframe]);
 
   return (
     <div
