@@ -127,18 +127,67 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       scaleMargins: { top: 0.85, bottom: 0 },
     });
 
-    // Generate mock data
-    const bars = generateMockOHLCV(symbol, timeframe, 200);
-    candleSeries.setData(bars as CandlestickData<Time>[]);
+    // Dynamic K-line history loading logic
+    const loadHistoryData = async () => {
+      try {
+        console.log(`[Finnhub Raw Data] Fetching history candles for: ${symbol} (${timeframe})`);
+        const res = await fetch(
+          `/api/stock/history?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
+        );
+        const json = await res.json();
 
-    const volumeData = bars.map((bar) => ({
-      time: bar.time,
-      value: bar.volume,
-      color: bar.close >= bar.open ? colors.volumeUp : colors.volumeDown,
-    }));
-    volumeSeries.setData(volumeData);
+        if (json.success && json.data && json.data.s === "ok") {
+          const rawCandles = json.data;
+          console.log("[Finnhub Raw Data] WebSocket/REST raw candle arrays:", rawCandles);
 
-    chart.timeScale().fitContent();
+          // Restructure array-grouped Finnhub candles into standard TradingView OHLC items
+          const formattedBars = rawCandles.t.map((timestamp: number, idx: number) => ({
+            time: timestamp as Time, // Unix timestamp in seconds
+            open: rawCandles.o[idx],
+            high: rawCandles.h[idx],
+            low: rawCandles.l[idx],
+            close: rawCandles.c[idx],
+          }));
+
+          console.log("[Mapped State Data] Mapped K-line history for TradingView:", formattedBars);
+
+          // Set candlestick series data
+          candleSeries.setData(formattedBars);
+
+          // Set volume series data
+          const volumeData = formattedBars.map((bar: { time: Time; open: number; close: number }, idx: number) => ({
+            time: bar.time,
+            value: rawCandles.v[idx],
+            color: bar.close >= bar.open ? colors.volumeUp : colors.volumeDown,
+          }));
+          volumeSeries.setData(volumeData);
+          chart.timeScale().fitContent();
+        } else {
+          console.warn("[Finnhub Raw Data] History API empty or missing credentials, employing mock data generator.");
+          loadFallbackMockData();
+        }
+      } catch (err) {
+        console.error("[Finnhub Raw Data] Failed to load history candles from backend:", err);
+        loadFallbackMockData();
+      }
+    };
+
+    // Helper fallback to fill chart canvas dynamically in offline/sandbox states
+    const loadFallbackMockData = () => {
+      const bars = generateMockOHLCV(symbol, timeframe, 200);
+      candleSeries.setData(bars as CandlestickData<Time>[]);
+
+      const volumeData = bars.map((bar) => ({
+        time: bar.time,
+        value: bar.volume,
+        color: bar.close >= bar.open ? colors.volumeUp : colors.volumeDown,
+      }));
+      volumeSeries.setData(volumeData);
+      chart.timeScale().fitContent();
+    };
+
+    // Trigger loader
+    loadHistoryData();
 
     chartRef.current = chart;
     seriesRef.current = candleSeries;
