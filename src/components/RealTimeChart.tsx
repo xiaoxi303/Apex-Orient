@@ -432,7 +432,13 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
   // Manage custom horizontal price line tracking the real-time calibrated price
   useEffect(() => {
     const series = seriesRef.current;
-    if (!series || !isHistoryLoaded || currentPrice === undefined || currentPrice === null) return;
+    if (!series || !isHistoryLoaded || currentPrice === undefined || currentPrice === null || currentPrice === 0) {
+      if (customPriceLineRef.current && series) {
+        series.removePriceLine(customPriceLineRef.current);
+        customPriceLineRef.current = null;
+      }
+      return;
+    }
 
     if (!customPriceLineRef.current) {
       customPriceLineRef.current = series.createPriceLine({
@@ -453,7 +459,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
   // Manage real-time candlestick updates (ticks close price)
   useEffect(() => {
     const series = seriesRef.current;
-    if (!series || !isHistoryLoaded || currentPrice === undefined || currentPrice === null) return;
+    if (!series || !isHistoryLoaded || currentPrice === undefined || currentPrice === null || currentPrice === 0) return;
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     
