@@ -1,11 +1,91 @@
 "use client";
 
 import React from "react";
-import { useStockStore } from "@/store/useStockStore";
+import { useStockStore, Stock } from "@/store/useStockStore";
 import { motion, AnimatePresence } from "framer-motion";
 import { TrendingUp, TrendingDown, Plus, LayoutGrid } from "lucide-react";
 import { GlassCard } from "./GlassCard";
 import { cn } from "@/utils/cn";
+
+// ─── WatchlistItem Subcomponent ───────────────────────────
+const WatchlistItem: React.FC<{
+  stock: Stock;
+  isSelected: boolean;
+  onClick: () => void;
+  index: number;
+}> = ({ stock, isSelected, onClick, index }) => {
+  // Subscribe directly to the latest price and change states for this specific symbol
+  const currentPrice = useStockStore((state) => state.stocks[stock.symbol]?.price);
+  const currentChange = useStockStore((state) => state.stocks[stock.symbol]?.change);
+  const currentChangePercent = useStockStore((state) => state.stocks[stock.symbol]?.changePercent);
+
+  // Fallback to static mock properties if live quote is not yet initialized
+  const displayPrice = currentPrice !== undefined ? currentPrice : stock.price;
+  const displayChange = currentChange !== undefined ? currentChange : stock.change;
+  const displayChangePercent = currentChangePercent !== undefined ? currentChangePercent : stock.changePercent;
+
+  const isPositive = displayChange >= 0;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, scale: 0.95 }}
+      transition={{ duration: 0.2, delay: index * 0.03 }}
+    >
+      <div
+        onClick={onClick}
+        className={cn(
+          "group relative flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all duration-300",
+          "border border-transparent",
+          isSelected
+            ? "bg-white/70 dark:bg-white/[0.06] border-white/80 dark:border-white/10 shadow-md shadow-slate-200/50 dark:shadow-none"
+            : "hover:bg-white/30 dark:hover:bg-white/[0.02]"
+        )}
+      >
+        {/* Selected Left-Border Indicator */}
+        {isSelected && (
+          <motion.div
+            layoutId="active-stock-indicator"
+            transition={{ type: "spring", stiffness: 350, damping: 30 }}
+            className="absolute left-0 top-3 bottom-3 w-1 rounded-r-full bg-gradient-to-b from-indigo-500 to-purple-500"
+          />
+        )}
+
+        {/* Stock Metadata */}
+        <div className="flex flex-col">
+          <span className="font-bold text-xs text-slate-800 dark:text-slate-200 tracking-wide">
+            {stock.symbol}
+          </span>
+          <span className="text-[10px] text-slate-400 dark:text-slate-400 truncate max-w-[120px]">
+            {stock.name}
+          </span>
+        </div>
+
+        {/* Stock Performance */}
+        <div className="flex flex-col items-end">
+          <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-100">
+            {displayPrice.toLocaleString(undefined, {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </span>
+          <div
+            className={cn(
+              "flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] font-bold mt-1 shadow-sm transition-all duration-300",
+              isPositive
+                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 group-hover:shadow-glow-green"
+                : "bg-rose-500/10 text-rose-600 dark:text-rose-400 group-hover:shadow-glow-red"
+            )}
+          >
+            {isPositive ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
+            <span>{isPositive ? "+" : ""}{displayChangePercent.toFixed(2)}%</span>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
 
 export const Sidebar: React.FC = () => {
   const {
@@ -87,67 +167,14 @@ export const Sidebar: React.FC = () => {
           <AnimatePresence mode="popLayout">
             {stocks.map((stock, idx) => {
               const isSelected = selectedStock.symbol === stock.symbol;
-              const isPositive = stock.change >= 0;
-
               return (
-                <motion.div
+                <WatchlistItem
                   key={stock.symbol}
-                  initial={{ opacity: 0, y: 10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  transition={{ duration: 0.2, delay: idx * 0.03 }}
-                >
-                  <div
-                    onClick={() => setSelectedStock(stock)}
-                    className={cn(
-                      "group relative flex items-center justify-between p-3 rounded-xl cursor-pointer transition-all duration-300",
-                      "border border-transparent",
-                      isSelected
-                        ? "bg-white/70 dark:bg-white/[0.06] border-white/80 dark:border-white/10 shadow-md shadow-slate-200/50 dark:shadow-none"
-                        : "hover:bg-white/30 dark:hover:bg-white/[0.02]"
-                    )}
-                  >
-                    {/* Selected Left-Border Indicator */}
-                    {isSelected && (
-                      <motion.div
-                        layoutId="active-stock-indicator"
-                        transition={{ type: "spring", stiffness: 350, damping: 30 }}
-                        className="absolute left-0 top-3 bottom-3 w-1 rounded-r-full bg-gradient-to-b from-indigo-500 to-purple-500"
-                      />
-                    )}
-
-                    {/* Stock Metadata */}
-                    <div className="flex flex-col">
-                      <span className="font-bold text-xs text-slate-800 dark:text-slate-200 tracking-wide">
-                        {stock.symbol}
-                      </span>
-                      <span className="text-[10px] text-slate-400 dark:text-slate-400 truncate max-w-[120px]">
-                        {stock.name}
-                      </span>
-                    </div>
-
-                    {/* Stock Performance */}
-                    <div className="flex flex-col items-end">
-                      <span className="font-mono text-xs font-bold text-slate-800 dark:text-slate-100">
-                        {stock.price.toLocaleString(undefined, {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </span>
-                      <div
-                        className={cn(
-                          "flex items-center gap-0.5 px-1.5 py-0.5 rounded-md text-[10px] font-bold mt-1 shadow-sm transition-all duration-300",
-                          isPositive
-                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 group-hover:shadow-glow-green"
-                            : "bg-rose-500/10 text-rose-600 dark:text-rose-400 group-hover:shadow-glow-red"
-                        )}
-                      >
-                        {isPositive ? <TrendingUp size={10} /> : <TrendingDown size={10} />}
-                        <span>{isPositive ? "+" : ""}{stock.changePercent}%</span>
-                      </div>
-                    </div>
-                  </div>
-                </motion.div>
+                  stock={stock}
+                  isSelected={isSelected}
+                  onClick={() => setSelectedStock(stock)}
+                  index={idx}
+                />
               );
             })}
           </AnimatePresence>

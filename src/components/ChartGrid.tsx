@@ -81,7 +81,13 @@ const ChartPane: React.FC<ChartPaneProps> = ({
 
   const timeframe = paneTimeframes[index] || "1d";
   const drawingKey = `${stock.symbol}_${timeframe}`;
-  const isPositive = stock.change >= 0;
+
+  // Reactive subscription to this specific symbol's real-time state
+  const storeStock = useStockStore((state) => state.stocks[stock.symbol]);
+  const resolvedPrice = storeStock ? storeStock.price : stock.price;
+  const resolvedChange = storeStock ? storeStock.change : stock.change;
+  const resolvedChangePercent = storeStock ? storeStock.changePercent : stock.changePercent;
+  const isPositive = resolvedChange >= 0;
 
   const handleCrosshairMove = useCallback(
     (_time: Time | null, price: number | null) => {
@@ -98,7 +104,7 @@ const ChartPane: React.FC<ChartPaneProps> = ({
     []
   );
 
-  const displayPrice = crosshairPrice ?? stock.price;
+  const displayPrice = crosshairPrice ?? resolvedPrice;
 
   return (
     <GlassCard interactive={false} className="flex flex-col w-full h-full relative overflow-hidden">
@@ -187,8 +193,8 @@ const ChartPane: React.FC<ChartPaneProps> = ({
               )}
             >
               {isPositive ? "+" : ""}
-              {stock.change.toFixed(2)} ({isPositive ? "+" : ""}
-              {stock.changePercent}%)
+              {resolvedChange.toFixed(2)} ({isPositive ? "+" : ""}
+              {resolvedChangePercent.toFixed(2)}%)
             </span>
           </div>
           <div className="flex items-center gap-1.5 border-l border-black/5 dark:border-white/5 pl-3">
@@ -239,19 +245,19 @@ const ChartPane: React.FC<ChartPaneProps> = ({
           <span>
             O{" "}
             <span className="font-mono font-bold text-slate-600 dark:text-slate-400">
-              {stock.price.toFixed(2)}
+              {resolvedPrice.toFixed(2)}
             </span>
           </span>
           <span>
             H{" "}
             <span className="font-mono font-bold text-emerald-500">
-              {(stock.price * 1.012).toFixed(2)}
+              {(resolvedPrice * 1.012).toFixed(2)}
             </span>
           </span>
           <span>
             L{" "}
             <span className="font-mono font-bold text-rose-500">
-              {(stock.price * 0.988).toFixed(2)}
+              {(resolvedPrice * 0.988).toFixed(2)}
             </span>
           </span>
           <span>

@@ -81,6 +81,7 @@ interface StockState {
   saveDrawingsDebounced: (symbol: string, timeframe: Timeframe, drawings: DrawingItem[]) => void;
   loadSettingsAndWatchlist: () => Promise<void>;
   setStockPrice: (symbol: string, price: number, change: number, changePercent: number) => void;
+  stocks: Record<string, Stock>;
 }
 
 // ─── Debounce Timer Map ────────────────────────────────────
@@ -149,6 +150,14 @@ const BASE_PRICES: Record<string, number> = {
   IWM: 202.15,
 };
 
+// --- Helper to initialize flat price dictionary ---
+const initialStocks: Record<string, Stock> = {};
+Object.values(defaultStocks).forEach((group) => {
+  group.forEach((stock) => {
+    initialStocks[stock.symbol] = stock;
+  });
+});
+
 // ─── Store Implementation ──────────────────────────────────
 export const useStockStore = create<StockState>((set, get) => ({
   // Theme
@@ -181,6 +190,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   activeGroup: "Tech",
   setActiveGroup: (group) => set({ activeGroup: group }),
   watchlists: defaultStocks,
+  stocks: initialStocks,
 
   // Selection
   selectedStock: defaultStocks["Tech"][0],
@@ -190,7 +200,13 @@ export const useStockStore = create<StockState>((set, get) => ({
     const targetName = stock.symbol.toUpperCase() === "APPLE" ? "Apple Inc." : stock.name;
     const targetStock = { ...stock, symbol: targetSymbol, name: targetName };
     
-    set({ selectedStock: targetStock });
+    set((state) => {
+      const updatedStocks = { ...state.stocks };
+      if (!updatedStocks[targetSymbol]) {
+        updatedStocks[targetSymbol] = targetStock;
+      }
+      return { selectedStock: targetStock, stocks: updatedStocks };
+    });
     
     // Background price calibration fetch
     fetch(`/api/stock/quote?symbol=${encodeURIComponent(targetSymbol)}`)
@@ -385,6 +401,8 @@ export const useStockStore = create<StockState>((set, get) => ({
         Indices: [],
       };
 
+      const newStocks: Record<string, Stock> = {};
+
       tickers.forEach((symbol) => {
         const name = STOCK_NAMES[symbol] || `${symbol} Asset`;
         const basePrice = BASE_PRICES[symbol] || 100.0;
@@ -397,6 +415,8 @@ export const useStockStore = create<StockState>((set, get) => ({
           changePercent: 0.0,
         };
 
+        newStocks[symbol] = stockItem;
+
         // Classify asset types dynamically
         const lowerSym = symbol.toLowerCase();
         if (lowerSym.includes("/usd") || lowerSym.includes("btc") || lowerSym.includes("eth") || lowerSym.includes("sol")) {
@@ -408,7 +428,7 @@ export const useStockStore = create<StockState>((set, get) => ({
         }
       });
 
-      set({ watchlists: newWatchlists });
+      set({ watchlists: newWatchlists, stocks: newStocks });
 
       // Sync selection safely with new lists
       const currentActiveGroup = get().activeGroup;
@@ -452,13 +472,11 @@ export const useStockStore = create<StockState>((set, get) => ({
   setStockPrice: (symbol, price, change, changePercent) => {
     set((state) => {
       const updatedWatchlists = { ...state.watchlists };
-      let stockUpdated = false;
       let updatedSelectedStock = state.selectedStock;
 
       for (const group of Object.keys(updatedWatchlists)) {
         updatedWatchlists[group] = updatedWatchlists[group].map((stock) => {
           if (stock.symbol === symbol) {
-            stockUpdated = true;
             const updatedStock = { ...stock, price, change, changePercent };
             if (state.selectedStock.symbol === symbol) {
               updatedSelectedStock = updatedStock;
@@ -469,13 +487,30 @@ export const useStockStore = create<StockState>((set, get) => ({
         });
       }
 
-      if (stockUpdated) {
-        return {
-          watchlists: updatedWatchlists,
-          selectedStock: updatedSelectedStock,
+      // Keep the flat stocks dictionary calibrated and updated
+      const updatedStocks = { ...state.stocks };
+      if (updatedStocks[symbol]) {
+        updatedStocks[symbol] = {
+          ...updatedStocks[symbol],
+          price,
+          change,
+          changePercent,
+        };
+      } else {
+        updatedStocks[symbol] = {
+          symbol,
+          name: STOCK_NAMES[symbol] || `${symbol} Asset`,
+          price,
+          change,
+          changePercent,
         };
       }
-      return {};
+
+      return {
+        watchlists: updatedWatchlists,
+        selectedStock: updatedSelectedStock,
+        stocks: updatedStocks,
+      };
     });
   },
 
