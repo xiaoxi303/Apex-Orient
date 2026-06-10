@@ -125,18 +125,12 @@ const defaultStocks: Record<string, Stock[]> = {
   ],
 };
 
-function formatTwelveDataSymbol(symbol: string, enabled: boolean): string {
-  if (!enabled) return symbol;
-  const nasdaqTickers = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "NFLX", "QQQ"];
-  const nyseTickers = ["DIA", "IWM"];
-  const upper = symbol.toUpperCase();
-  if (nasdaqTickers.includes(upper)) {
-    return `${upper}:NASDAQ`;
+function formatYahooSymbol(symbol: string): string {
+  const clean = symbol.toUpperCase();
+  if (clean.includes("/") && !clean.includes("BTC") && !clean.includes("ETH") && !clean.includes("SOL") && !clean.includes("DOGE")) {
+    return clean.replace("/", "") + "=X";
   }
-  if (nyseTickers.includes(upper)) {
-    return `${upper}:NYSE`;
-  }
-  return symbol;
+  return clean.replace("/", "-");
 }
 
 const STOCK_NAMES: Record<string, string> = {
@@ -413,33 +407,49 @@ export const useStockStore = create<StockState>((set, get) => ({
     }, 1000);
   },
 
-  // ─── Twelve Data single price fetch ───
+  // ─── Yahoo Finance single price fetch (real-time injection) ───
   fetchSelectedStockPrice: async (symbol: string) => {
-    const { twelveDataApiKey, smartSymbolSwitch } = get();
-    const apiKey = twelveDataApiKey || "demo";
     const cleanSymbol = symbol.toUpperCase() === "APPLE" ? "AAPL" : symbol;
-    const formatted = formatTwelveDataSymbol(cleanSymbol, smartSymbolSwitch);
+    const yahooSymbol = formatYahooSymbol(cleanSymbol);
 
     try {
-      console.log(`[Twelve Data API] Fetching single price for: ${formatted}`);
+      console.log(`[Yahoo Finance API] Fetching real-time quote for: ${yahooSymbol}`);
       const res = await fetch(
-        `https://api.twelvedata.com/price?symbol=${encodeURIComponent(formatted)}&apikey=${apiKey}`
+        `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(yahooSymbol)}`,
+        {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+          },
+        }
       );
       const data = await res.json();
+      const result = data?.quoteResponse?.result?.[0];
 
-      if (data.status === "error" || !data.price) {
-        console.error("[Twelve Data API] Price API error:", data.message);
+      if (!result) {
+        console.error(`[Yahoo Finance API] Failed to extract quote for ${yahooSymbol}`);
         return;
       }
 
-      const price = parseFloat(data.price);
-      const base = BASE_PRICES[cleanSymbol] || price;
-      const change = price - base;
-      const changePercent = base !== 0 ? (change / base) * 100 : 0;
+      const marketState = result.marketState;
+      let price = result.regularMarketPrice !== undefined ? parseFloat(result.regularMarketPrice) : 0.0;
+      let change = result.regularMarketChange !== undefined ? parseFloat(result.regularMarketChange) : 0.0;
+      let changePercent = result.regularMarketChangePercent !== undefined ? parseFloat(result.regularMarketChangePercent) : 0.0;
+
+      // Pre/Post market calibration overrides
+      if ((marketState === "POST" || marketState === "CLOSED") && result.postMarketPrice !== undefined) {
+        price = parseFloat(result.postMarketPrice);
+        change = result.postMarketChange !== undefined ? parseFloat(result.postMarketChange) : change;
+        changePercent = result.postMarketChangePercent !== undefined ? parseFloat(result.postMarketChangePercent) : changePercent;
+      } else if (marketState === "PRE" && result.preMarketPrice !== undefined) {
+        price = parseFloat(result.preMarketPrice);
+        change = result.preMarketChange !== undefined ? parseFloat(result.preMarketChange) : change;
+        changePercent = result.preMarketChangePercent !== undefined ? parseFloat(result.preMarketChangePercent) : changePercent;
+      }
 
       get().setStockPrice(cleanSymbol, price, change, changePercent);
     } catch (err) {
-      console.error(`[Twelve Data API] Failed to fetch price for ${cleanSymbol}:`, err);
+      console.error(`[Yahoo Finance API] Failed to fetch price for ${cleanSymbol}:`, err);
     }
   },
 
