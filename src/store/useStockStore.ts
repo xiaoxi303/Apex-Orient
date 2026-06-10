@@ -447,98 +447,87 @@ export const useStockStore = create<StockState>((set, get) => ({
         return;
       }
 
-      interface TwelveDataQuoteResponse {
-        symbol?: string;
-        price?: string;
-        change?: string;
-        percent_change?: string;
-        status?: string;
-        message?: string;
-      }
+      const stocksUpdate: Record<string, { price: number; change: number; changePercent: number }> = {};
 
-      const parseSingle = (quoteObj: TwelveDataQuoteResponse) => {
-        if (!quoteObj || quoteObj.status === "error") return null;
-        const price = parseFloat(quoteObj.price || "0");
-        const change = parseFloat(quoteObj.change || "0");
-        const pctStr = quoteObj.percent_change || "0";
-        const changePercent = parseFloat(pctStr.replace("%", ""));
-        return { price, change, changePercent };
-      };
-
-      const nextStocks = { ...get().stocks };
-      const nextWatchlists = { ...get().watchlists };
-      let nextSelectedStock = { ...get().selectedStock };
-      let hasUpdates = false;
-
-      const updateItem = (sym: string, price: number, change: number, changePercent: number) => {
-        const cleanSymbol = sym.split(":")[0];
-        
-        // Update stocks dictionary
-        if (nextStocks[cleanSymbol]) {
-          nextStocks[cleanSymbol] = {
-            ...nextStocks[cleanSymbol],
-            price,
-            change,
-            changePercent,
-          };
-          hasUpdates = true;
-        } else {
-          nextStocks[cleanSymbol] = {
-            symbol: cleanSymbol,
-            name: STOCK_NAMES[cleanSymbol] || `${cleanSymbol} Asset`,
-            price,
-            change,
-            changePercent,
-          };
-          hasUpdates = true;
-        }
-
-        // Update watchlists array
-        Object.keys(nextWatchlists).forEach((group) => {
-          nextWatchlists[group] = nextWatchlists[group].map((stock) => {
-            if (stock.symbol === cleanSymbol) {
-              return { ...stock, price, change, changePercent };
-            }
-            return stock;
-          });
-        });
-
-        // Update selected stock if matched
-        if (nextSelectedStock.symbol === cleanSymbol) {
-          nextSelectedStock = {
-            ...nextSelectedStock,
-            price,
-            change,
-            changePercent,
-          };
-        }
-      };
-
-      if (data.symbol && data.price !== undefined) {
-        const quote = parseSingle(data);
-        if (quote) {
-          updateItem(data.symbol, quote.price, quote.change, quote.changePercent);
-        }
+      if (data.price) {
+        // Case A: Single item flat response
+        const pureSymbol = (data.symbol || symbols[0]).split(":")[0];
+        stocksUpdate[pureSymbol] = {
+          price: parseFloat(data.price),
+          change: parseFloat(data.change || "0"),
+          changePercent: parseFloat((data.percent_change || "0").replace("%", ""))
+        };
       } else {
-        // Multi-symbol dictionary response
+        // Case B: Batch dictionary response with exchange key suffixes
         Object.keys(data).forEach((rawKey) => {
-          const quoteObj = data[rawKey];
-          if (quoteObj) {
-            const quote = parseSingle(quoteObj);
-            if (quote) {
-              updateItem(rawKey, quote.price, quote.change, quote.changePercent);
-            }
+          const pureSymbol = rawKey.split(":")[0];
+          const item = data[rawKey];
+          if (item && item.price) {
+            stocksUpdate[pureSymbol] = {
+              price: parseFloat(item.price),
+              change: parseFloat(item.change || "0"),
+              changePercent: parseFloat((item.percent_change || "0").replace("%", ""))
+            };
           }
         });
       }
 
-      if (hasUpdates) {
-        set({
-          stocks: nextStocks,
-          watchlists: nextWatchlists,
-          selectedStock: nextSelectedStock,
+      // Responsive atomic state updates across stocks, watchlists, and selected stock
+      set((state) => {
+        const updatedStocks = { ...state.stocks };
+        const updatedWatchlists = { ...state.watchlists };
+        let updatedSelectedStock = { ...state.selectedStock };
+
+        Object.keys(stocksUpdate).forEach((sym) => {
+          if (updatedStocks[sym]) {
+            updatedStocks[sym] = {
+              ...updatedStocks[sym],
+              price: stocksUpdate[sym].price,
+              change: stocksUpdate[sym].change,
+              changePercent: stocksUpdate[sym].changePercent,
+            };
+          } else {
+            updatedStocks[sym] = {
+              symbol: sym,
+              name: STOCK_NAMES[sym] || `${sym} Asset`,
+              price: stocksUpdate[sym].price,
+              change: stocksUpdate[sym].change,
+              changePercent: stocksUpdate[sym].changePercent,
+            };
+          }
+
+          // Update lists in watchlist
+          Object.keys(updatedWatchlists).forEach((group) => {
+            updatedWatchlists[group] = updatedWatchlists[group].map((stock) => {
+              if (stock.symbol === sym) {
+                return {
+                  ...stock,
+                  price: stocksUpdate[sym].price,
+                  change: stocksUpdate[sym].change,
+                  changePercent: stocksUpdate[sym].changePercent,
+                };
+              }
+              return stock;
+            });
+          });
+
+          // Sync current selection
+          if (updatedSelectedStock.symbol === sym) {
+            updatedSelectedStock = {
+              ...updatedSelectedStock,
+              price: stocksUpdate[sym].price,
+              change: stocksUpdate[sym].change,
+              changePercent: stocksUpdate[sym].changePercent,
+            };
+          }
         });
-      }
+
+        return {
+          stocks: updatedStocks,
+          watchlists: updatedWatchlists,
+          selectedStock: updatedSelectedStock,
+        };
+      });
     } catch (err) {
       console.error("[Twelve Data API] Failed to fetch batch watchlist quotes:", err);
     }
