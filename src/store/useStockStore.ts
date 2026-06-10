@@ -451,7 +451,7 @@ export const useStockStore = create<StockState>((set, get) => ({
         symbol?: string;
         price?: string;
         change?: string;
-        change_percent?: string;
+        percent_change?: string;
         status?: string;
         message?: string;
       }
@@ -460,28 +460,83 @@ export const useStockStore = create<StockState>((set, get) => ({
         if (!quoteObj || quoteObj.status === "error") return null;
         const price = parseFloat(quoteObj.price || "0");
         const change = parseFloat(quoteObj.change || "0");
-        const pctStr = quoteObj.change_percent || "0";
+        const pctStr = quoteObj.percent_change || "0";
         const changePercent = parseFloat(pctStr.replace("%", ""));
         return { price, change, changePercent };
+      };
+
+      const nextStocks = { ...get().stocks };
+      const nextWatchlists = { ...get().watchlists };
+      let nextSelectedStock = { ...get().selectedStock };
+      let hasUpdates = false;
+
+      const updateItem = (sym: string, price: number, change: number, changePercent: number) => {
+        const cleanSymbol = sym.split(":")[0];
+        
+        // Update stocks dictionary
+        if (nextStocks[cleanSymbol]) {
+          nextStocks[cleanSymbol] = {
+            ...nextStocks[cleanSymbol],
+            price,
+            change,
+            changePercent,
+          };
+          hasUpdates = true;
+        } else {
+          nextStocks[cleanSymbol] = {
+            symbol: cleanSymbol,
+            name: STOCK_NAMES[cleanSymbol] || `${cleanSymbol} Asset`,
+            price,
+            change,
+            changePercent,
+          };
+          hasUpdates = true;
+        }
+
+        // Update watchlists array
+        Object.keys(nextWatchlists).forEach((group) => {
+          nextWatchlists[group] = nextWatchlists[group].map((stock) => {
+            if (stock.symbol === cleanSymbol) {
+              return { ...stock, price, change, changePercent };
+            }
+            return stock;
+          });
+        });
+
+        // Update selected stock if matched
+        if (nextSelectedStock.symbol === cleanSymbol) {
+          nextSelectedStock = {
+            ...nextSelectedStock,
+            price,
+            change,
+            changePercent,
+          };
+        }
       };
 
       if (data.symbol && data.price !== undefined) {
         const quote = parseSingle(data);
         if (quote) {
-          const cleanSymbol = data.symbol.split(":")[0];
-          get().setStockPrice(cleanSymbol, quote.price, quote.change, quote.changePercent);
+          updateItem(data.symbol, quote.price, quote.change, quote.changePercent);
         }
       } else {
         // Multi-symbol dictionary response
-        Object.keys(data).forEach((returnedKey) => {
-          const cleanSymbol = returnedKey.split(":")[0];
-          const quoteObj = data[returnedKey];
+        Object.keys(data).forEach((rawKey) => {
+          const quoteObj = data[rawKey];
           if (quoteObj) {
             const quote = parseSingle(quoteObj);
             if (quote) {
-              get().setStockPrice(cleanSymbol, quote.price, quote.change, quote.changePercent);
+              updateItem(rawKey, quote.price, quote.change, quote.changePercent);
             }
           }
+        });
+      }
+
+      if (hasUpdates) {
+        set({
+          stocks: nextStocks,
+          watchlists: nextWatchlists,
+          selectedStock: nextSelectedStock,
         });
       }
     } catch (err) {
@@ -508,7 +563,7 @@ export const useStockStore = create<StockState>((set, get) => ({
 
       const price = parseFloat(data.price || "0");
       const change = parseFloat(data.change || "0");
-      const pctStr = data.change_percent || "0";
+      const pctStr = data.percent_change || "0";
       const changePercent = parseFloat(pctStr.replace("%", ""));
 
       const cleanSymbol = (data.symbol || symbol).split(":")[0];
