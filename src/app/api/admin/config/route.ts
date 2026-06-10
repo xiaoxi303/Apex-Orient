@@ -1,9 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
+export const dynamic = "force-dynamic";
+
+/**
+ * Helper to mask sensitive keys in api_config JSON string
+ */
+function maskApiConfig(value: string): string {
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed.active_key) {
+      const keyLen = parsed.active_key.length;
+      if (keyLen > 8) {
+        parsed.active_key = `${parsed.active_key.slice(0, 4)}***********${parsed.active_key.slice(-4)}`;
+      } else {
+        parsed.active_key = "***********";
+      }
+    }
+    if (parsed.backup_keys && Array.isArray(parsed.backup_keys)) {
+      parsed.backup_keys = parsed.backup_keys.map((k: string) => 
+        k.length > 8 ? `${k.slice(0, 4)}***********${k.slice(-4)}` : "***********"
+      );
+    }
+    return JSON.stringify(parsed);
+  } catch (e) {
+    console.error("[Config API] Failed to mask api_config key:", e);
+    return value;
+  }
+}
+
 /**
  * GET: Retrieve admin settings.
- * Supports dynamic desensitization and default configuration fallback for 'api_config'.
+ * Supports dynamic security masking for 'api_config' either requested directly or returned in bulk.
  * Query parameters: key (string)
  */
 export async function GET(req: NextRequest) {
@@ -12,9 +40,15 @@ export async function GET(req: NextRequest) {
     const key = searchParams.get("key");
 
     if (!key) {
-      // If no key is provided, return all settings
+      // Return all settings, but mask api_config for security
       const settings = await prisma.adminSetting.findMany();
-      return NextResponse.json({ success: true, settings });
+      const maskedSettings = settings.map((s) => {
+        if (s.key === "api_config") {
+          return { ...s, value: maskApiConfig(s.value) };
+        }
+        return s;
+      });
+      return NextResponse.json({ success: true, settings: maskedSettings });
     }
 
     const setting = await prisma.adminSetting.findUnique({
@@ -23,36 +57,16 @@ export async function GET(req: NextRequest) {
 
     let returnedValue = setting ? setting.value : null;
 
-    // --- Dynamic Security Masking & Null Protection for API Configs ---
     if (key === "api_config") {
       if (!returnedValue) {
-        // If database does not have an api_config record yet, fallback to a clean template
+        // Fallback clean template for Twelve Data
         returnedValue = JSON.stringify({
-          provider: "finnhub",
+          provider: "twelvedata",
           active_key: "",
           backup_keys: [],
         });
       } else {
-        try {
-          const parsed = JSON.parse(returnedValue);
-          if (parsed.active_key) {
-            const keyLen = parsed.active_key.length;
-            // Mask intermediate characters, displaying only first 4 and last 4 characters
-            if (keyLen > 8) {
-              parsed.active_key = `${parsed.active_key.slice(0, 4)}***********${parsed.active_key.slice(-4)}`;
-            } else {
-              parsed.active_key = "***********";
-            }
-          }
-          if (parsed.backup_keys && Array.isArray(parsed.backup_keys)) {
-            parsed.backup_keys = parsed.backup_keys.map((k: string) => 
-              k.length > 8 ? `${k.slice(0, 4)}***********${k.slice(-4)}` : "***********"
-            );
-          }
-          returnedValue = JSON.stringify(parsed);
-        } catch (e) {
-          console.error("Failed to mask api_config key on GET:", e);
-        }
+        returnedValue = maskApiConfig(returnedValue);
       }
     }
 
@@ -62,7 +76,7 @@ export async function GET(req: NextRequest) {
       value: returnedValue,
     });
   } catch (error) {
-    console.error("Failed to fetch admin setting:", error);
+    console.error("[Config API] Failed to fetch admin setting:", error);
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : "Internal Server Error" },
       { status: 500 }
@@ -89,12 +103,10 @@ export async function POST(req: NextRequest) {
 
     let finalValue = value;
 
-    // --- Mask Preservation & First-Time Configuration Guard ---
+    // Preserve original key if masked value is submitted
     if (key === "api_config") {
       try {
         const parsedIncoming = JSON.parse(value);
-        
-        // If the submitted key contains masks (*)
         if (parsedIncoming.active_key && parsedIncoming.active_key.includes("*")) {
           const existingSetting = await prisma.adminSetting.findUnique({
             where: { key: "api_config" },
@@ -102,10 +114,8 @@ export async function POST(req: NextRequest) {
 
           if (existingSetting && existingSetting.value) {
             const parsedExisting = JSON.parse(existingSetting.value);
-            // Replace the masked input value with the raw database credential
             parsedIncoming.active_key = parsedExisting.active_key;
             
-            // Do the same for backup keys if they match patterns
             if (parsedIncoming.backup_keys && Array.isArray(parsedIncoming.backup_keys) && parsedExisting.backup_keys) {
               parsedIncoming.backup_keys = parsedIncoming.backup_keys.map((k: string, idx: number) => {
                 if (k.includes("*") && parsedExisting.backup_keys[idx]) {
@@ -114,11 +124,8 @@ export async function POST(req: NextRequest) {
                 return k;
               });
             }
-            
             finalValue = JSON.stringify(parsedIncoming);
           } else {
-            // Case: Database has no previous record, but user submitted a masked key.
-            // Reject the request to prevent writing dummy characters to a fresh environment.
             return NextResponse.json(
               {
                 success: false,
@@ -129,7 +136,7 @@ export async function POST(req: NextRequest) {
           }
         }
       } catch (e) {
-        console.error("Failed to process api_config key preservation on POST:", e);
+        console.error("[Config API] Failed to process api_config key preservation on POST:", e);
         return NextResponse.json(
           { success: false, error: "Invalid JSON format in value parameter" },
           { status: 400 }
@@ -137,7 +144,6 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // Upsert the configuration setting
     const updatedSetting = await prisma.adminSetting.upsert({
       where: { key },
       update: { value: finalValue },
@@ -149,7 +155,7 @@ export async function POST(req: NextRequest) {
       setting: updatedSetting,
     });
   } catch (error) {
-    console.error("Failed to save admin setting:", error);
+    console.error("[Config API] Failed to save admin setting:", error);
     return NextResponse.json(
       { success: false, error: error instanceof Error ? error.message : "Internal Server Error" },
       { status: 500 }

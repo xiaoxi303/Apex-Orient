@@ -81,6 +81,14 @@ interface StockState {
   fetchWatchlistQuotes: () => Promise<void>;
   fetchSingleQuote: (symbol: string) => Promise<void>;
 
+  // Admin Config settings synced to client store
+  refreshInterval: number;
+  setRefreshInterval: (interval: number) => void;
+  smartSleep: boolean;
+  setSmartSleep: (enabled: boolean) => void;
+  activeThemePack: string;
+  setActiveThemePack: (pack: string) => void;
+
   // Stage 3 Full-Stack & Live sync actions
   loadDrawings: (symbol: string, timeframe: Timeframe) => Promise<void>;
   saveDrawingsDebounced: (symbol: string, timeframe: Timeframe, drawings: DrawingItem[]) => void;
@@ -136,6 +144,15 @@ const STOCK_NAMES: Record<string, string> = {
   QQQ: "Invesco QQQ Trust",
   DIA: "SPDR Dow Jones ETF",
   IWM: "iShares Russell 2000 ETF",
+  // Forex support
+  "EUR/USD": "Euro / US Dollar",
+  "GBP/USD": "British Pound / US Dollar",
+  "USD/JPY": "US Dollar / Japanese Yen",
+  "AUD/USD": "Australian Dollar / US Dollar",
+  "USD/CAD": "US Dollar / Canadian Dollar",
+  "GBP/JPY": "British Pound / Japanese Yen",
+  "EUR/GBP": "Euro / British Pound",
+  "CHF/USD": "Swiss Franc / US Dollar",
 };
 
 const BASE_PRICES: Record<string, number> = {
@@ -155,6 +172,15 @@ const BASE_PRICES: Record<string, number> = {
   QQQ: 438.60,
   DIA: 389.90,
   IWM: 202.15,
+  // Forex defaults
+  "EUR/USD": 1.0850,
+  "GBP/USD": 1.2680,
+  "USD/JPY": 151.20,
+  "AUD/USD": 0.6540,
+  "USD/CAD": 1.3520,
+  "GBP/JPY": 191.80,
+  "EUR/GBP": 0.8550,
+  "CHF/USD": 1.1120,
 };
 
 const initialStocks: Record<string, Stock> = {};
@@ -202,6 +228,14 @@ export const useStockStore = create<StockState>((set, get) => ({
   twelveDataApiKey: "",
   setTwelveDataApiKey: (key) => set({ twelveDataApiKey: key }),
 
+  // Config variables
+  refreshInterval: 30,
+  setRefreshInterval: (interval) => set({ refreshInterval: interval }),
+  smartSleep: false,
+  setSmartSleep: (enabled) => set({ smartSleep: enabled }),
+  activeThemePack: "tech",
+  setActiveThemePack: (pack) => set({ activeThemePack: pack }),
+
   // Selection
   selectedStock: defaultStocks["Tech"][0],
   setSelectedStock: (stock) => {
@@ -217,7 +251,6 @@ export const useStockStore = create<StockState>((set, get) => ({
       return { selectedStock: targetStock, stocks: updatedStocks };
     });
     
-    // Direct Twelve Data quote fetch on selection
     get().fetchSingleQuote(targetSymbol);
   },
 
@@ -233,7 +266,6 @@ export const useStockStore = create<StockState>((set, get) => ({
       return { paneStocks: updated };
     });
 
-    // Direct Twelve Data quote fetch for target pane symbol
     get().fetchSingleQuote(targetSymbol);
   },
 
@@ -372,7 +404,6 @@ export const useStockStore = create<StockState>((set, get) => ({
     const { watchlists, twelveDataApiKey } = get();
     const apiKey = twelveDataApiKey || "demo";
     
-    // Gather all active unique symbols from watchlists
     const symbolsSet = new Set<string>();
     Object.values(watchlists).forEach((group) => {
       group.forEach((stock) => {
@@ -414,13 +445,11 @@ export const useStockStore = create<StockState>((set, get) => ({
       };
 
       if (data.symbol && data.price !== undefined) {
-        // Single quote object returned
         const quote = parseSingle(data);
         if (quote) {
           get().setStockPrice(data.symbol, quote.price, quote.change, quote.changePercent);
         }
       } else {
-        // Multi-symbol dictionary response
         symbols.forEach((sym) => {
           const quoteObj = data[sym] || data[sym.toUpperCase()];
           if (quoteObj) {
@@ -464,7 +493,7 @@ export const useStockStore = create<StockState>((set, get) => ({
 
   // ─── Fetch Ticker Pool & Categorize Watchlist ──────
   loadSettingsAndWatchlist: async () => {
-    // 1. Fetch Twelve Data API Key from our backend helper
+    // 1. Fetch Twelve Data API Key
     try {
       const keyRes = await fetch("/api/stock/twelve-key");
       const keyData = await keyRes.json();
@@ -476,7 +505,39 @@ export const useStockStore = create<StockState>((set, get) => ({
       console.warn("[Store Action] Failed to load Twelve Data key, using demo:", err);
     }
 
-    // 2. Fetch watchlist tickers
+    // 2. Fetch admin config variables (refresh_interval, smart_sleep, active_theme_pack)
+    let intervalSecs = 30;
+    let smartSleepEnabled = false;
+    let themePack = "tech";
+    try {
+      const intervalRes = await fetch("/api/admin/config?key=refresh_interval");
+      const intervalData = await intervalRes.json();
+      if (intervalData.success && intervalData.value) {
+        intervalSecs = parseInt(intervalData.value) || 30;
+      }
+
+      const sleepRes = await fetch("/api/admin/config?key=smart_sleep");
+      const sleepData = await sleepRes.json();
+      if (sleepData.success && sleepData.value) {
+        smartSleepEnabled = sleepData.value === "true";
+      }
+
+      const themeRes = await fetch("/api/admin/config?key=active_theme_pack");
+      const themeData = await themeRes.json();
+      if (themeData.success && themeData.value) {
+        themePack = themeData.value;
+      }
+    } catch (err) {
+      console.warn("[Store Action] Failed to load settings configs:", err);
+    }
+
+    set({
+      refreshInterval: intervalSecs,
+      smartSleep: smartSleepEnabled,
+      activeThemePack: themePack,
+    });
+
+    // 3. Fetch watchlist tickers
     try {
       const res = await fetch("/api/admin/config?key=ticker_pool");
       const data = await res.json();
@@ -554,12 +615,18 @@ export const useStockStore = create<StockState>((set, get) => ({
         get().fetchSingleQuote(nextSelected.symbol);
       }
 
-      // ─── Heartbeat Mechanism 30s Quotes Refresh Timer ───
-      if (typeof window !== "undefined" && !quoteIntervalTimer) {
-        console.log("[Heartbeat] Initiating 30s Twelve Data quote refresh interval.");
+      // ─── Heartbeat Mechanism Quotes Refresh Timer ───
+      if (typeof window !== "undefined") {
+        if (quoteIntervalTimer) {
+          clearInterval(quoteIntervalTimer);
+        }
+        console.log(`[Heartbeat] Initiating Twelve Data quotes refresh interval: ${intervalSecs}s. Smart Sleep: ${smartSleepEnabled}`);
         quoteIntervalTimer = setInterval(() => {
+          if (get().smartSleep && document.hidden) {
+            return;
+          }
           get().fetchWatchlistQuotes();
-        }, 30000);
+        }, intervalSecs * 1000);
       }
     } catch (err) {
       console.error("Failed to initialize dynamic watchlist from API:", err);
@@ -639,3 +706,28 @@ export const useStockStore = create<StockState>((set, get) => ({
     }
   },
 }));
+
+// ─── Visibility Change Listener for Smart Sleep Mode ───
+if (typeof window !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    const store = useStockStore.getState();
+    const isSleep = store.smartSleep;
+    const interval = store.refreshInterval;
+
+    if (document.hidden) {
+      if (isSleep && quoteIntervalTimer) {
+        console.log("[Heartbeat] Smart Sleep: Tab hidden, clearing quote interval.");
+        clearInterval(quoteIntervalTimer);
+        quoteIntervalTimer = null;
+      }
+    } else {
+      if (isSleep && !quoteIntervalTimer) {
+        console.log("[Heartbeat] Smart Sleep: Tab active, resuming quote interval.");
+        store.fetchWatchlistQuotes();
+        quoteIntervalTimer = setInterval(() => {
+          store.fetchWatchlistQuotes();
+        }, interval * 1000);
+      }
+    }
+  });
+}
