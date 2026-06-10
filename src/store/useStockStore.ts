@@ -68,6 +68,10 @@ interface StockState {
   clearDrawings: (key: string) => void;
   getDrawingsForChart: (symbol: string, timeframe: Timeframe) => DrawingItem[];
 
+  // Global Search Modal State (Stage 3 Extension)
+  searchOpen: boolean;
+  setSearchOpen: (open: boolean) => void;
+
   // Stage 3 Full-Stack & Live sync actions
   loadDrawings: (symbol: string, timeframe: Timeframe) => Promise<void>;
   saveDrawingsDebounced: (symbol: string, timeframe: Timeframe, drawings: DrawingItem[]) => void;
@@ -421,4 +425,8 @@ export const useStockStore = create<StockState>((set, get) => ({
       return {};
     });
   },
+
+  // Global search modal controls
+  searchOpen: false,
+  setSearchOpen: (open) => set({ searchOpen: open }),
 }));

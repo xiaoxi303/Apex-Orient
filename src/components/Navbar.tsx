@@ -7,7 +7,7 @@ import { GlassCard } from "./GlassCard";
 import { cn } from "@/utils/cn";
 
 export const Navbar: React.FC = () => {
-  const { theme, toggleTheme, initializeTheme, layoutMode, setLayoutMode } = useStockStore();
+  const { theme, toggleTheme, initializeTheme, layoutMode, setLayoutMode, setSearchOpen } = useStockStore();
   const [newsBrief, setNewsBrief] = useState("🔥 Loading latest briefings... Streaming real-time US asset feeds.");
 
   // Initialize theme class on render
@@ -68,7 +68,7 @@ export const Navbar: React.FC = () => {
       <div className="flex items-center gap-4">
         {/* Command Search Box button */}
         <button
-          onClick={() => alert("Search Feature Coming Soon!")}
+          onClick={() => setSearchOpen(true)}
           className={cn(
             "flex items-center gap-3 px-3.5 py-1.5 rounded-xl text-xs font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-all duration-300",
             "bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10",

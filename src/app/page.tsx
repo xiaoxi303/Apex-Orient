@@ -6,6 +6,7 @@ import { Navbar } from "@/components/Navbar";
 import { ChartGrid } from "@/components/ChartGrid";
 import { useStockStore } from "@/store/useStockStore";
 import { useStockWS } from "@/hooks/useStockWS";
+import { SearchModal } from "@/components/SearchModal";
 
 export default function Home() {
   const loadSettingsAndWatchlist = useStockStore((s) => s.loadSettingsAndWatchlist);
@@ -36,6 +37,9 @@ export default function Home() {
           <ChartGrid />
         </div>
       </div>
+
+      {/* Global Search Dialog Modal (Cmd+K / Ctrl+K) */}
+      <SearchModal />
     </main>
   );
 }
