@@ -103,26 +103,9 @@ const debounceTimeouts: Record<string, NodeJS.Timeout> = {};
 
 // ─── Default Fallback Stocks ────────────────────────────────
 const defaultStocks: Record<string, Stock[]> = {
-  Tech: [
-    { symbol: "AAPL", name: "Apple Inc.", price: 0, change: 0, changePercent: 0 },
-    { symbol: "MSFT", name: "Microsoft Corp.", price: 0, change: 0, changePercent: 0 },
-    { symbol: "NVDA", name: "NVIDIA Corp.", price: 0, change: 0, changePercent: 0 },
-    { symbol: "TSLA", name: "Tesla Inc.", price: 0, change: 0, changePercent: 0 },
-    { symbol: "GOOGL", name: "Alphabet Inc.", price: 0, change: 0, changePercent: 0 },
-    { symbol: "META", name: "Meta Platforms", price: 0, change: 0, changePercent: 0 },
-  ],
-  Crypto: [
-    { symbol: "BTC/USD", name: "Bitcoin / USD", price: 0, change: 0, changePercent: 0 },
-    { symbol: "ETH/USD", name: "Ethereum / USD", price: 0, change: 0, changePercent: 0 },
-    { symbol: "SOL/USD", name: "Solana / USD", price: 0, change: 0, changePercent: 0 },
-    { symbol: "DOGE/USD", name: "Dogecoin / USD", price: 0, change: 0, changePercent: 0 },
-  ],
-  Indices: [
-    { symbol: "SPY", name: "SPDR S&P 500 ETF", price: 0, change: 0, changePercent: 0 },
-    { symbol: "QQQ", name: "Invesco QQQ Trust", price: 0, change: 0, changePercent: 0 },
-    { symbol: "DIA", name: "SPDR Dow Jones ETF", price: 0, change: 0, changePercent: 0 },
-    { symbol: "IWM", name: "iShares Russell 2000 ETF", price: 0, change: 0, changePercent: 0 },
-  ],
+  Tech: [],
+  Crypto: [],
+  Indices: [],
 };
 
 function formatTwelveDataSymbol(symbol: string, enabled: boolean): string {
@@ -167,33 +150,7 @@ const STOCK_NAMES: Record<string, string> = {
   "CHF/USD": "Swiss Franc / US Dollar",
 };
 
-const FALLBACK_PRICES: Record<string, number> = {
-  AAPL: 178.53,
-  MSFT: 415.50,
-  NVDA: 875.12,
-  TSLA: 172.98,
-  GOOGL: 151.60,
-  META: 495.22,
-  AMZN: 175.35,
-  NFLX: 610.50,
-  "BTC/USD": 67250.00,
-  "ETH/USD": 3540.50,
-  "SOL/USD": 148.25,
-  "DOGE/USD": 0.142,
-  SPY: 512.85,
-  QQQ: 438.60,
-  DIA: 389.90,
-  IWM: 202.15,
-  // Forex defaults
-  "EUR/USD": 1.0850,
-  "GBP/USD": 1.2680,
-  "USD/JPY": 151.20,
-  "AUD/USD": 0.6540,
-  "USD/CAD": 1.3520,
-  "GBP/JPY": 191.80,
-  "EUR/GBP": 0.8550,
-  "CHF/USD": 1.1120,
-};
+const FALLBACK_PRICES: Record<string, number> = {};
 
 const initialStocks: Record<string, Stock> = {};
 Object.values(defaultStocks).forEach((group) => {
@@ -251,7 +208,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   setActiveThemePack: (pack) => set({ activeThemePack: pack }),
 
   // Selection
-  selectedStock: defaultStocks["Tech"][0],
+  selectedStock: { symbol: "", name: "", price: 0, change: 0, changePercent: 0 },
   setSelectedStock: (stock) => {
     const targetSymbol = stock.symbol.toUpperCase() === "APPLE" ? "AAPL" : stock.symbol;
     const targetName = stock.symbol.toUpperCase() === "APPLE" ? "Apple Inc." : stock.name;
@@ -271,7 +228,7 @@ export const useStockStore = create<StockState>((set, get) => ({
   // Layout
   layoutMode: "single",
   setLayoutMode: (mode) => set({ layoutMode: mode }),
-  paneStocks: ["AAPL", "MSFT", "NVDA", "TSLA"],
+  paneStocks: ["", "", "", ""],
   setPaneStock: (index, symbol) => {
     const targetSymbol = symbol.toUpperCase() === "APPLE" ? "AAPL" : symbol;
     set((state) => {
@@ -415,6 +372,7 @@ export const useStockStore = create<StockState>((set, get) => ({
 
   // ─── Twelve Data single price fetch ───
   fetchSelectedStockPrice: async (symbol: string) => {
+    if (!symbol) return;
     const { twelveDataApiKey, smartSymbolSwitch } = get();
     const apiKey = twelveDataApiKey || "demo";
     const cleanSymbol = symbol.toUpperCase() === "APPLE" ? "AAPL" : symbol;
