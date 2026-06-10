@@ -184,18 +184,49 @@ export const useStockStore = create<StockState>((set, get) => ({
 
   // Selection
   selectedStock: defaultStocks["Tech"][0],
-  setSelectedStock: (stock) => set({ selectedStock: stock }),
+  setSelectedStock: (stock) => {
+    // Standardize symbol if it is APPLE
+    const targetSymbol = stock.symbol.toUpperCase() === "APPLE" ? "AAPL" : stock.symbol;
+    const targetName = stock.symbol.toUpperCase() === "APPLE" ? "Apple Inc." : stock.name;
+    const targetStock = { ...stock, symbol: targetSymbol, name: targetName };
+    
+    set({ selectedStock: targetStock });
+    
+    // Background price calibration fetch
+    fetch(`/api/stock/quote?symbol=${encodeURIComponent(targetSymbol)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.result) {
+          const { price, change, changePercent } = data.result;
+          get().setStockPrice(targetSymbol, price, change, changePercent);
+        }
+      })
+      .catch((err) => console.error("[Store Action] Background quote fetch failed on selection:", err));
+  },
 
   // Layout
   layoutMode: "single",
   setLayoutMode: (mode) => set({ layoutMode: mode }),
   paneStocks: ["AAPL", "MSFT", "NVDA", "TSLA"],
-  setPaneStock: (index, symbol) =>
+  setPaneStock: (index, symbol) => {
+    const targetSymbol = symbol.toUpperCase() === "APPLE" ? "AAPL" : symbol;
     set((state) => {
       const updated = [...state.paneStocks];
-      updated[index] = symbol;
+      updated[index] = targetSymbol;
       return { paneStocks: updated };
-    }),
+    });
+
+    // Background price calibration fetch
+    fetch(`/api/stock/quote?symbol=${encodeURIComponent(targetSymbol)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.result) {
+          const { price, change, changePercent } = data.result;
+          get().setStockPrice(targetSymbol, price, change, changePercent);
+        }
+      })
+      .catch((err) => console.error("[Store Action] Background quote fetch failed on setPaneStock:", err));
+  },
 
   // Timeframes
   paneTimeframes: ["1d", "1d", "1d", "1d"],
@@ -344,6 +375,9 @@ export const useStockStore = create<StockState>((set, get) => ({
         }
       }
 
+      // Standardize ticker symbols, correcting APPLE to AAPL
+      tickers = tickers.map((t) => (t.toUpperCase() === "APPLE" ? "AAPL" : t));
+
       // Re-initialize watchlist groups based on dynamic tickers
       const newWatchlists: Record<string, Stock[]> = {
         Tech: [],
@@ -379,20 +413,35 @@ export const useStockStore = create<StockState>((set, get) => ({
       // Sync selection safely with new lists
       const currentActiveGroup = get().activeGroup;
       const activeGroupStocks = newWatchlists[currentActiveGroup] || [];
+      let nextSelected = get().selectedStock;
       if (activeGroupStocks.length > 0) {
-        const currentSelected = get().selectedStock;
-        const exists = activeGroupStocks.some((s) => s.symbol === currentSelected.symbol);
+        const exists = activeGroupStocks.some((s) => s.symbol === nextSelected.symbol);
         if (!exists) {
-          set({ selectedStock: activeGroupStocks[0] });
+          nextSelected = activeGroupStocks[0];
+          set({ selectedStock: nextSelected });
         }
       } else {
         // Fallback to first non-empty watchlist group
         for (const group of ["Tech", "Crypto", "Indices"]) {
           if (newWatchlists[group].length > 0) {
-            set({ activeGroup: group, selectedStock: newWatchlists[group][0] });
+            nextSelected = newWatchlists[group][0];
+            set({ activeGroup: group, selectedStock: nextSelected });
             break;
           }
         }
+      }
+
+      // Calibrate initial price of selected stock
+      if (nextSelected) {
+        fetch(`/api/stock/quote?symbol=${encodeURIComponent(nextSelected.symbol)}`)
+          .then((res) => res.json())
+          .then((qData) => {
+            if (qData.success && qData.result) {
+              const { price, change, changePercent } = qData.result;
+              get().setStockPrice(nextSelected.symbol, price, change, changePercent);
+            }
+          })
+          .catch((e) => console.warn("Failed to fetch initial selected stock price quote:", e));
       }
     } catch (err) {
       console.error("Failed to initialize dynamic watchlist from API:", err);
@@ -438,15 +487,24 @@ export const useStockStore = create<StockState>((set, get) => ({
   isRefreshing: false,
   refreshCurrentStock: async (symbol, timeframe) => {
     set({ isRefreshing: true });
+    // Sanitize symbol
+    const targetSymbol = symbol.toUpperCase() === "APPLE" ? "AAPL" : symbol;
     try {
-      console.log(`[Store Action] Initiated force-refresh for: ${symbol} (${timeframe})`);
+      console.log(`[Store Action] Initiated force-refresh for: ${targetSymbol} (${timeframe})`);
       
       // 1. Re-fetch K-line drawings from database
-      await get().loadDrawings(symbol, timeframe);
+      await get().loadDrawings(targetSymbol, timeframe);
 
       // 2. Reload ticker pool lists and dynamic settings
       await get().loadSettingsAndWatchlist();
       
+      // 3. Calibrate real-time price using the quote endpoint
+      const quoteRes = await fetch(`/api/stock/quote?symbol=${encodeURIComponent(targetSymbol)}`);
+      const quoteData = await quoteRes.json();
+      if (quoteData.success && quoteData.result) {
+        const { price, change, changePercent } = quoteData.result;
+        get().setStockPrice(targetSymbol, price, change, changePercent);
+      }
     } catch (err) {
       console.error("[Store Action] Force-refresh execution failed:", err);
     } finally {
