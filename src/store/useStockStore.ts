@@ -86,6 +86,8 @@ interface StockState {
   setRefreshInterval: (interval: number) => void;
   smartSleep: boolean;
   setSmartSleep: (enabled: boolean) => void;
+  smartSymbolSwitch: boolean;
+  setSmartSymbolSwitch: (enabled: boolean) => void;
   activeThemePack: string;
   setActiveThemePack: (pack: string) => void;
 
@@ -126,6 +128,20 @@ const defaultStocks: Record<string, Stock[]> = {
     { symbol: "IWM", name: "iShares Russell 2000 ETF", price: 202.15, change: 2.45, changePercent: 1.23 },
   ],
 };
+
+function formatTwelveDataSymbol(symbol: string, enabled: boolean): string {
+  if (!enabled) return symbol;
+  const nasdaqTickers = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "NFLX", "QQQ"];
+  const nyseTickers = ["DIA", "IWM"];
+  const upper = symbol.toUpperCase();
+  if (nasdaqTickers.includes(upper)) {
+    return `${upper}:NASDAQ`;
+  }
+  if (nyseTickers.includes(upper)) {
+    return `${upper}:NYSE`;
+  }
+  return symbol;
+}
 
 const STOCK_NAMES: Record<string, string> = {
   AAPL: "Apple Inc.",
@@ -233,6 +249,8 @@ export const useStockStore = create<StockState>((set, get) => ({
   setRefreshInterval: (interval) => set({ refreshInterval: interval }),
   smartSleep: false,
   setSmartSleep: (enabled) => set({ smartSleep: enabled }),
+  smartSymbolSwitch: false,
+  setSmartSymbolSwitch: (enabled) => set({ smartSymbolSwitch: enabled }),
   activeThemePack: "tech",
   setActiveThemePack: (pack) => set({ activeThemePack: pack }),
 
@@ -401,7 +419,7 @@ export const useStockStore = create<StockState>((set, get) => ({
 
   // ─── Twelve Data batch quote fetch ───
   fetchWatchlistQuotes: async () => {
-    const { watchlists, twelveDataApiKey } = get();
+    const { watchlists, twelveDataApiKey, smartSymbolSwitch } = get();
     const apiKey = twelveDataApiKey || "demo";
     
     const symbolsSet = new Set<string>();
@@ -414,10 +432,13 @@ export const useStockStore = create<StockState>((set, get) => ({
     
     if (symbols.length === 0) return;
 
+    // Apply standard exchange formatting if the smart switch is on
+    const formattedSymbolsList = symbols.map((s) => formatTwelveDataSymbol(s, smartSymbolSwitch));
+
     try {
-      console.log(`[Twelve Data API] Fetching batch quotes for: ${symbols.join(",")}`);
+      console.log(`[Twelve Data API] Fetching batch quotes for: ${formattedSymbolsList.join(",")}`);
       const res = await fetch(
-        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbols.join(","))}&apikey=${apiKey}`
+        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(formattedSymbolsList.join(","))}&apikey=${apiKey}`
       );
       const data = await res.json();
 
@@ -447,15 +468,18 @@ export const useStockStore = create<StockState>((set, get) => ({
       if (data.symbol && data.price !== undefined) {
         const quote = parseSingle(data);
         if (quote) {
-          get().setStockPrice(data.symbol, quote.price, quote.change, quote.changePercent);
+          const cleanSymbol = data.symbol.split(":")[0];
+          get().setStockPrice(cleanSymbol, quote.price, quote.change, quote.changePercent);
         }
       } else {
-        symbols.forEach((sym) => {
-          const quoteObj = data[sym] || data[sym.toUpperCase()];
+        // Multi-symbol dictionary response
+        Object.keys(data).forEach((returnedKey) => {
+          const cleanSymbol = returnedKey.split(":")[0];
+          const quoteObj = data[returnedKey];
           if (quoteObj) {
             const quote = parseSingle(quoteObj);
             if (quote) {
-              get().setStockPrice(sym, quote.price, quote.change, quote.changePercent);
+              get().setStockPrice(cleanSymbol, quote.price, quote.change, quote.changePercent);
             }
           }
         });
@@ -467,11 +491,13 @@ export const useStockStore = create<StockState>((set, get) => ({
 
   // ─── Twelve Data single quote fetch ───
   fetchSingleQuote: async (symbol: string) => {
-    const apiKey = get().twelveDataApiKey || "demo";
+    const { twelveDataApiKey, smartSymbolSwitch } = get();
+    const apiKey = twelveDataApiKey || "demo";
     try {
-      console.log(`[Twelve Data API] Fetching single quote for: ${symbol}`);
+      const formatted = formatTwelveDataSymbol(symbol, smartSymbolSwitch);
+      console.log(`[Twelve Data API] Fetching single quote for: ${formatted}`);
       const res = await fetch(
-        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbol)}&apikey=${apiKey}`
+        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(formatted)}&apikey=${apiKey}`
       );
       const data = await res.json();
 
@@ -485,7 +511,8 @@ export const useStockStore = create<StockState>((set, get) => ({
       const pctStr = data.change_percent || "0";
       const changePercent = parseFloat(pctStr.replace("%", ""));
 
-      get().setStockPrice(symbol, price, change, changePercent);
+      const cleanSymbol = (data.symbol || symbol).split(":")[0];
+      get().setStockPrice(cleanSymbol, price, change, changePercent);
     } catch (err) {
       console.error(`[Twelve Data API] Failed to fetch single quote for ${symbol}:`, err);
     }
@@ -505,10 +532,11 @@ export const useStockStore = create<StockState>((set, get) => ({
       console.warn("[Store Action] Failed to load Twelve Data key, using demo:", err);
     }
 
-    // 2. Fetch admin config variables (refresh_interval, smart_sleep, active_theme_pack)
+    // 2. Fetch admin config variables (refresh_interval, smart_sleep, active_theme_pack, smart_symbol_switch)
     let intervalSecs = 30;
     let smartSleepEnabled = false;
     let themePack = "tech";
+    let switchEnabled = false;
     try {
       const intervalRes = await fetch("/api/admin/config?key=refresh_interval");
       const intervalData = await intervalRes.json();
@@ -527,6 +555,12 @@ export const useStockStore = create<StockState>((set, get) => ({
       if (themeData.success && themeData.value) {
         themePack = themeData.value;
       }
+
+      const switchRes = await fetch("/api/admin/config?key=smart_symbol_switch");
+      const switchData = await switchRes.json();
+      if (switchData.success && switchData.value) {
+        switchEnabled = switchData.value === "true";
+      }
     } catch (err) {
       console.warn("[Store Action] Failed to load settings configs:", err);
     }
@@ -535,6 +569,7 @@ export const useStockStore = create<StockState>((set, get) => ({
       refreshInterval: intervalSecs,
       smartSleep: smartSleepEnabled,
       activeThemePack: themePack,
+      smartSymbolSwitch: switchEnabled,
     });
 
     // 3. Fetch watchlist tickers

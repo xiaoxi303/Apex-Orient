@@ -39,6 +39,20 @@ const mapTwelveDataInterval = (tf: string): string => {
   }
 };
 
+function formatTwelveDataSymbol(symbol: string, enabled: boolean): string {
+  if (!enabled) return symbol;
+  const nasdaqTickers = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "NFLX", "QQQ"];
+  const nyseTickers = ["DIA", "IWM"];
+  const upper = symbol.toUpperCase();
+  if (nasdaqTickers.includes(upper)) {
+    return `${upper}:NASDAQ`;
+  }
+  if (nyseTickers.includes(upper)) {
+    return `${upper}:NYSE`;
+  }
+  return symbol;
+}
+
 export const RealTimeChart: React.FC<RealTimeChartProps> = ({
   symbol,
   timeframe,
@@ -60,6 +74,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
 
   const theme = useStockStore((s) => s.theme);
   const isRefreshing = useStockStore((s) => s.isRefreshing);
+  const smartSymbolSwitch = useStockStore((s) => s.smartSymbolSwitch);
   
   const currentPrice = useStockStore((s) => s.stocks[symbol]?.price);
 
@@ -141,13 +156,14 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
 
       const twelveApiKey = useStockStore.getState().twelveDataApiKey || "demo";
       const mappedInterval = mapTwelveDataInterval(timeframe);
+      const formattedSymbol = formatTwelveDataSymbol(symbol, smartSymbolSwitch);
 
       try {
-        console.log(`[Twelve Data Chart API] Fetching direct time series: symbol=${symbol}, interval=${mappedInterval}`);
+        console.log(`[Twelve Data Chart API] Fetching direct time series: symbol=${formattedSymbol}, interval=${mappedInterval}`);
         
         // Fetch from Twelve Data with UTC timezone parameter to prevent local timezone shifts
         const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(
-          symbol
+          formattedSymbol
         )}&interval=${mappedInterval}&outputsize=500&timezone=UTC&apikey=${twelveApiKey}`;
 
         const res = await fetch(url);
@@ -233,7 +249,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
         setIsHistoryLoaded(true);
       }
     },
-    [symbol, timeframe, theme, getChartColors, loadFallbackMockData]
+    [symbol, timeframe, theme, getChartColors, loadFallbackMockData, smartSymbolSwitch]
   );
 
   // Initialize chart canvas
@@ -356,7 +372,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       setIsHistoryLoaded(false); 
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [symbol, timeframe]);
+  }, [symbol, timeframe, smartSymbolSwitch]);
 
   // Sync theme changes
   useEffect(() => {

@@ -81,6 +81,10 @@ export default function AdminPage() {
   const [smartSleep, setSmartSleep] = useState<boolean>(true);
   const [rateLimitStatus, setRateLimitStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
 
+  // Smart Symbol Switch (Exchange Suffix Formatter)
+  const [smartSymbolSwitch, setSmartSymbolSwitch] = useState<boolean>(false);
+  const [switchStatus, setSwitchStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+
   // Asset injection states
   const [injectingPack, setInjectingPack] = useState<string | null>(null);
   const [injectStatus, setInjectStatus] = useState<Record<string, "idle" | "success" | "error">>({
@@ -137,6 +141,13 @@ export default function AdminPage() {
         const dataSleep = await resSleep.json();
         if (dataSleep.success && dataSleep.value) {
           setSmartSleep(dataSleep.value === "true");
+        }
+
+        // Smart symbol switch
+        const resSwitch = await fetch("/api/admin/config?key=smart_symbol_switch");
+        const dataSwitch = await resSwitch.json();
+        if (dataSwitch.success && dataSwitch.value) {
+          setSmartSymbolSwitch(dataSwitch.value === "true");
         }
       } catch (err) {
         console.error("Failed to load settings:", err);
@@ -263,6 +274,29 @@ export default function AdminPage() {
     } catch (err) {
       console.error(err);
       setRateLimitStatus("error");
+    }
+  };
+
+  // Save Smart Symbol Switch
+  const handleSaveSwitch = async (val: boolean) => {
+    setSmartSymbolSwitch(val);
+    setSwitchStatus("saving");
+    try {
+      const res = await fetch("/api/admin/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "smart_symbol_switch", value: val.toString() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setSwitchStatus("success");
+        setTimeout(() => setSwitchStatus("idle"), 2000);
+      } else {
+        setSwitchStatus("error");
+      }
+    } catch (err) {
+      console.error(err);
+      setSwitchStatus("error");
     }
   };
 
@@ -429,12 +463,21 @@ export default function AdminPage() {
                   <div className="space-y-4">
                     {/* Provider Selection */}
                     <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">数据源服务商</label>
+                      <div className="flex justify-between items-center">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">数据源服务商</label>
+                        {provider === "twelvedata" && (
+                          <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[8px] font-bold shadow-[0_0_12px_rgba(16,185,129,0.35)] animate-pulse">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                            <span>NEON GREEN LINKED</span>
+                          </div>
+                        )}
+                      </div>
                       <select
                         value={provider}
                         onChange={(e) => setProvider(e.target.value)}
                         className={cn(
-                          "w-full px-3 py-2.5 rounded-xl text-xs font-bold bg-white/50 dark:bg-black/30 border border-black/10 dark:border-white/10 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 focus:border-indigo-500/50 text-slate-800 dark:text-slate-100"
+                          "w-full px-3 py-2.5 rounded-xl text-xs font-bold bg-white/50 dark:bg-black/30 border border-black/10 dark:border-white/10 focus:outline-none focus:ring-1 focus:ring-indigo-500/50 focus:border-indigo-500/50 text-slate-800 dark:text-slate-100",
+                          provider === "twelvedata" && "border-emerald-500/30 dark:border-emerald-500/40 text-emerald-500 dark:text-emerald-400 focus:border-emerald-500 focus:ring-emerald-500"
                         )}
                       >
                         <option value="twelvedata" className="dark:bg-[#0c0f17]">Twelve Data (前端直连)</option>
@@ -519,6 +562,53 @@ export default function AdminPage() {
                         </>
                       )}
                     </button>
+                  </div>
+                </GlassCard>
+
+                {/* Module B2: Smart Symbol Switch (Exchange Suffix Formatter) */}
+                <GlassCard className="p-6 border border-white/40 dark:border-white/10 shadow-xl flex flex-col bg-white/40 dark:bg-[#0b0f19]/40 backdrop-blur-xl hover:shadow-2xl hover:border-white/50 dark:hover:border-white/20 transition-all duration-300">
+                  <div className="flex items-center justify-between mb-4 border-b border-black/5 dark:border-white/5 pb-3">
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 rounded-lg bg-indigo-500/10 text-indigo-500 border border-indigo-500/20">
+                        <Zap size={18} className="text-indigo-400 animate-pulse" />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-sm tracking-wider">智能交易所后缀开关</h3>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400">Smart Symbol Switch</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-black/5 dark:bg-white/[0.02] border border-black/5 dark:border-white/5">
+                      <div className="space-y-0.5 max-w-[70%]">
+                        <span className="text-xs font-bold block">自动追加交易所后缀</span>
+                        <span className="text-[8px] text-slate-400 block leading-normal">
+                          启用后自动追加交易所主板后缀（如将 AAPL 格式化为 AAPL:NASDAQ 提交给 Twelve Data），精准命中 NASDAQ/NYSE 主板，彻底防范过期/沙盒价格干扰。
+                        </span>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleSaveSwitch(!smartSymbolSwitch)}
+                        className={cn(
+                          "w-10 h-6 rounded-full p-0.5 transition-colors duration-300 focus:outline-none flex items-center",
+                          smartSymbolSwitch ? "bg-emerald-500 shadow-[0_0_8px_#10b981]" : "bg-slate-300 dark:bg-slate-700"
+                        )}
+                      >
+                        <motion.div
+                          layout
+                          className="w-5 h-5 rounded-full bg-white shadow-sm"
+                          animate={{ x: smartSymbolSwitch ? 14 : 0 }}
+                          transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                        />
+                      </button>
+                    </div>
+
+                    <div className="flex justify-between items-center text-[8px] text-slate-400 font-mono">
+                      <span>STATUS: {switchStatus === "saving" ? "SAVING..." : switchStatus === "success" ? "SYNCED" : "READY"}</span>
+                      {smartSymbolSwitch && <span className="text-emerald-400 font-bold">NASDAQ / NYSE ENABLED</span>}
+                    </div>
                   </div>
                 </GlassCard>
 
