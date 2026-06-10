@@ -26,7 +26,6 @@ export interface DrawingItem {
   points: DrawingPoint[];    // 1 point for horizontal, 2 for trendline/fib
   color: string;
   lineWidth: number;
-  // For fibonacci: additional levels
   fibLevels?: number[];
 }
 
@@ -68,13 +67,19 @@ interface StockState {
   clearDrawings: (key: string) => void;
   getDrawingsForChart: (symbol: string, timeframe: Timeframe) => DrawingItem[];
 
-  // Global Search Modal State (Stage 3 Extension)
+  // Global Search Modal State
   searchOpen: boolean;
   setSearchOpen: (open: boolean) => void;
 
-  // Manual Force-Refresh Actions (Stage 3 Extension)
+  // Manual Force-Refresh Actions
   isRefreshing: boolean;
   refreshCurrentStock: (symbol: string, timeframe: Timeframe) => Promise<void>;
+
+  // Twelve Data direct frontend fetch actions
+  twelveDataApiKey: string;
+  setTwelveDataApiKey: (key: string) => void;
+  fetchWatchlistQuotes: () => Promise<void>;
+  fetchSingleQuote: (symbol: string) => Promise<void>;
 
   // Stage 3 Full-Stack & Live sync actions
   loadDrawings: (symbol: string, timeframe: Timeframe) => Promise<void>;
@@ -86,6 +91,9 @@ interface StockState {
 
 // ─── Debounce Timer Map ────────────────────────────────────
 const debounceTimeouts: Record<string, NodeJS.Timeout> = {};
+
+// ─── Global Interval Timer for Twelve Data quote updates ───
+let quoteIntervalTimer: NodeJS.Timeout | null = null;
 
 // ─── Default Fallback Stocks ────────────────────────────────
 const defaultStocks: Record<string, Stock[]> = {
@@ -111,7 +119,6 @@ const defaultStocks: Record<string, Stock[]> = {
   ],
 };
 
-// ─── Helper mappings for dynamic watchlist seeding ────────
 const STOCK_NAMES: Record<string, string> = {
   AAPL: "Apple Inc.",
   MSFT: "Microsoft Corp.",
@@ -150,7 +157,6 @@ const BASE_PRICES: Record<string, number> = {
   IWM: 202.15,
 };
 
-// --- Helper to initialize flat price dictionary ---
 const initialStocks: Record<string, Stock> = {};
 Object.values(defaultStocks).forEach((group) => {
   group.forEach((stock) => {
@@ -192,10 +198,13 @@ export const useStockStore = create<StockState>((set, get) => ({
   watchlists: defaultStocks,
   stocks: initialStocks,
 
+  // Twelve Data Key Setup
+  twelveDataApiKey: "",
+  setTwelveDataApiKey: (key) => set({ twelveDataApiKey: key }),
+
   // Selection
   selectedStock: defaultStocks["Tech"][0],
   setSelectedStock: (stock) => {
-    // Standardize symbol if it is APPLE
     const targetSymbol = stock.symbol.toUpperCase() === "APPLE" ? "AAPL" : stock.symbol;
     const targetName = stock.symbol.toUpperCase() === "APPLE" ? "Apple Inc." : stock.name;
     const targetStock = { ...stock, symbol: targetSymbol, name: targetName };
@@ -208,16 +217,8 @@ export const useStockStore = create<StockState>((set, get) => ({
       return { selectedStock: targetStock, stocks: updatedStocks };
     });
     
-    // Background price calibration fetch
-    fetch(`/api/stock/quote?symbol=${encodeURIComponent(targetSymbol)}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success && data.result) {
-          const { price, change, changePercent } = data.result;
-          get().setStockPrice(targetSymbol, price, change, changePercent);
-        }
-      })
-      .catch((err) => console.error("[Store Action] Background quote fetch failed on selection:", err));
+    // Direct Twelve Data quote fetch on selection
+    get().fetchSingleQuote(targetSymbol);
   },
 
   // Layout
@@ -232,16 +233,8 @@ export const useStockStore = create<StockState>((set, get) => ({
       return { paneStocks: updated };
     });
 
-    // Background price calibration fetch
-    fetch(`/api/stock/quote?symbol=${encodeURIComponent(targetSymbol)}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.success && data.result) {
-          const { price, change, changePercent } = data.result;
-          get().setStockPrice(targetSymbol, price, change, changePercent);
-        }
-      })
-      .catch((err) => console.error("[Store Action] Background quote fetch failed on setPaneStock:", err));
+    // Direct Twelve Data quote fetch for target pane symbol
+    get().fetchSingleQuote(targetSymbol);
   },
 
   // Timeframes
@@ -320,7 +313,7 @@ export const useStockStore = create<StockState>((set, get) => ({
     return get().chartDrawings[key] || [];
   },
 
-  // ─── Stage 3: Load Drawings from Backend API ────────────────
+  // ─── Load Drawings from Backend API ────────────────
   loadDrawings: async (symbol, timeframe) => {
     const key = `${symbol}_${timeframe}`;
     try {
@@ -341,16 +334,14 @@ export const useStockStore = create<StockState>((set, get) => ({
     }
   },
 
-  // ─── Stage 3: Auto-Save Drawings to DB with Debounce ────────
+  // ─── Auto-Save Drawings to DB with Debounce ────────
   saveDrawingsDebounced: (symbol, timeframe, drawings) => {
     const key = `${symbol}_${timeframe}`;
 
-    // Clear any pending timeout for this symbol_timeframe pair
     if (debounceTimeouts[key]) {
       clearTimeout(debounceTimeouts[key]);
     }
 
-    // Schedule database write 1 second after user actions stop
     debounceTimeouts[key] = setTimeout(async () => {
       try {
         const response = await fetch("/api/drawings", {
@@ -376,8 +367,116 @@ export const useStockStore = create<StockState>((set, get) => ({
     }, 1000);
   },
 
-  // ─── Stage 3: Fetch Ticker Pool & Categorize Watchlist ──────
+  // ─── Twelve Data batch quote fetch ───
+  fetchWatchlistQuotes: async () => {
+    const { watchlists, twelveDataApiKey } = get();
+    const apiKey = twelveDataApiKey || "demo";
+    
+    // Gather all active unique symbols from watchlists
+    const symbolsSet = new Set<string>();
+    Object.values(watchlists).forEach((group) => {
+      group.forEach((stock) => {
+        symbolsSet.add(stock.symbol);
+      });
+    });
+    const symbols = Array.from(symbolsSet);
+    
+    if (symbols.length === 0) return;
+
+    try {
+      console.log(`[Twelve Data API] Fetching batch quotes for: ${symbols.join(",")}`);
+      const res = await fetch(
+        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbols.join(","))}&apikey=${apiKey}`
+      );
+      const data = await res.json();
+
+      if (data.status === "error") {
+        console.error("[Twelve Data API] Batch Quote API error:", data.message);
+        return;
+      }
+
+      interface TwelveDataQuoteResponse {
+        symbol?: string;
+        price?: string;
+        change?: string;
+        change_percent?: string;
+        status?: string;
+        message?: string;
+      }
+
+      const parseSingle = (quoteObj: TwelveDataQuoteResponse) => {
+        if (!quoteObj || quoteObj.status === "error") return null;
+        const price = parseFloat(quoteObj.price || "0");
+        const change = parseFloat(quoteObj.change || "0");
+        const pctStr = quoteObj.change_percent || "0";
+        const changePercent = parseFloat(pctStr.replace("%", ""));
+        return { price, change, changePercent };
+      };
+
+      if (data.symbol && data.price !== undefined) {
+        // Single quote object returned
+        const quote = parseSingle(data);
+        if (quote) {
+          get().setStockPrice(data.symbol, quote.price, quote.change, quote.changePercent);
+        }
+      } else {
+        // Multi-symbol dictionary response
+        symbols.forEach((sym) => {
+          const quoteObj = data[sym] || data[sym.toUpperCase()];
+          if (quoteObj) {
+            const quote = parseSingle(quoteObj);
+            if (quote) {
+              get().setStockPrice(sym, quote.price, quote.change, quote.changePercent);
+            }
+          }
+        });
+      }
+    } catch (err) {
+      console.error("[Twelve Data API] Failed to fetch batch watchlist quotes:", err);
+    }
+  },
+
+  // ─── Twelve Data single quote fetch ───
+  fetchSingleQuote: async (symbol: string) => {
+    const apiKey = get().twelveDataApiKey || "demo";
+    try {
+      console.log(`[Twelve Data API] Fetching single quote for: ${symbol}`);
+      const res = await fetch(
+        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbol)}&apikey=${apiKey}`
+      );
+      const data = await res.json();
+
+      if (data.status === "error" || !data.price) {
+        console.error("[Twelve Data API] Single Quote API error:", data.message);
+        return;
+      }
+
+      const price = parseFloat(data.price || "0");
+      const change = parseFloat(data.change || "0");
+      const pctStr = data.change_percent || "0";
+      const changePercent = parseFloat(pctStr.replace("%", ""));
+
+      get().setStockPrice(symbol, price, change, changePercent);
+    } catch (err) {
+      console.error(`[Twelve Data API] Failed to fetch single quote for ${symbol}:`, err);
+    }
+  },
+
+  // ─── Fetch Ticker Pool & Categorize Watchlist ──────
   loadSettingsAndWatchlist: async () => {
+    // 1. Fetch Twelve Data API Key from our backend helper
+    try {
+      const keyRes = await fetch("/api/stock/twelve-key");
+      const keyData = await keyRes.json();
+      if (keyData.success && keyData.apiKey) {
+        set({ twelveDataApiKey: keyData.apiKey });
+        console.log("[Store Action] Loaded Twelve Data API Key successfully.");
+      }
+    } catch (err) {
+      console.warn("[Store Action] Failed to load Twelve Data key, using demo:", err);
+    }
+
+    // 2. Fetch watchlist tickers
     try {
       const res = await fetch("/api/admin/config?key=ticker_pool");
       const data = await res.json();
@@ -391,10 +490,8 @@ export const useStockStore = create<StockState>((set, get) => ({
         }
       }
 
-      // Standardize ticker symbols, correcting APPLE to AAPL
       tickers = tickers.map((t) => (t.toUpperCase() === "APPLE" ? "AAPL" : t));
 
-      // Re-initialize watchlist groups based on dynamic tickers
       const newWatchlists: Record<string, Stock[]> = {
         Tech: [],
         Crypto: [],
@@ -417,7 +514,6 @@ export const useStockStore = create<StockState>((set, get) => ({
 
         newStocks[symbol] = stockItem;
 
-        // Classify asset types dynamically
         const lowerSym = symbol.toLowerCase();
         if (lowerSym.includes("/usd") || lowerSym.includes("btc") || lowerSym.includes("eth") || lowerSym.includes("sol")) {
           newWatchlists.Crypto.push(stockItem);
@@ -441,7 +537,6 @@ export const useStockStore = create<StockState>((set, get) => ({
           set({ selectedStock: nextSelected });
         }
       } else {
-        // Fallback to first non-empty watchlist group
         for (const group of ["Tech", "Crypto", "Indices"]) {
           if (newWatchlists[group].length > 0) {
             nextSelected = newWatchlists[group][0];
@@ -451,24 +546,27 @@ export const useStockStore = create<StockState>((set, get) => ({
         }
       }
 
-      // Calibrate initial price of selected stock
+      // Initial batch quote retrieval
+      await get().fetchWatchlistQuotes();
+
+      // Trigger single quote calibration for the selected stock
       if (nextSelected) {
-        fetch(`/api/stock/quote?symbol=${encodeURIComponent(nextSelected.symbol)}`)
-          .then((res) => res.json())
-          .then((qData) => {
-            if (qData.success && qData.result) {
-              const { price, change, changePercent } = qData.result;
-              get().setStockPrice(nextSelected.symbol, price, change, changePercent);
-            }
-          })
-          .catch((e) => console.warn("Failed to fetch initial selected stock price quote:", e));
+        get().fetchSingleQuote(nextSelected.symbol);
+      }
+
+      // ─── Heartbeat Mechanism 30s Quotes Refresh Timer ───
+      if (typeof window !== "undefined" && !quoteIntervalTimer) {
+        console.log("[Heartbeat] Initiating 30s Twelve Data quote refresh interval.");
+        quoteIntervalTimer = setInterval(() => {
+          get().fetchWatchlistQuotes();
+        }, 30000);
       }
     } catch (err) {
       console.error("Failed to initialize dynamic watchlist from API:", err);
     }
   },
 
-  // ─── Stage 3: Live WebSocket price update dispatcher ───────
+  // ─── Live WebSocket price update dispatcher ───────
   setStockPrice: (symbol, price, change, changePercent) => {
     set((state) => {
       const updatedWatchlists = { ...state.watchlists };
@@ -487,7 +585,6 @@ export const useStockStore = create<StockState>((set, get) => ({
         });
       }
 
-      // Keep the flat stocks dictionary calibrated and updated
       const updatedStocks = { ...state.stocks };
       if (updatedStocks[symbol]) {
         updatedStocks[symbol] = {
@@ -518,11 +615,10 @@ export const useStockStore = create<StockState>((set, get) => ({
   searchOpen: false,
   setSearchOpen: (open) => set({ searchOpen: open }),
 
-  // Manual Force-Refresh Actions (Stage 3 Extension)
+  // Manual Force-Refresh Actions
   isRefreshing: false,
   refreshCurrentStock: async (symbol, timeframe) => {
     set({ isRefreshing: true });
-    // Sanitize symbol
     const targetSymbol = symbol.toUpperCase() === "APPLE" ? "AAPL" : symbol;
     try {
       console.log(`[Store Action] Initiated force-refresh for: ${targetSymbol} (${timeframe})`);
@@ -533,17 +629,11 @@ export const useStockStore = create<StockState>((set, get) => ({
       // 2. Reload ticker pool lists and dynamic settings
       await get().loadSettingsAndWatchlist();
       
-      // 3. Calibrate real-time price using the quote endpoint
-      const quoteRes = await fetch(`/api/stock/quote?symbol=${encodeURIComponent(targetSymbol)}`);
-      const quoteData = await quoteRes.json();
-      if (quoteData.success && quoteData.result) {
-        const { price, change, changePercent } = quoteData.result;
-        get().setStockPrice(targetSymbol, price, change, changePercent);
-      }
+      // 3. Calibrate real-time price using Twelve Data single quote endpoint
+      await get().fetchSingleQuote(targetSymbol);
     } catch (err) {
       console.error("[Store Action] Force-refresh execution failed:", err);
     } finally {
-      // Visual feedback buffer so user notices the spinning icon
       await new Promise((resolve) => setTimeout(resolve, 600));
       set({ isRefreshing: false });
     }

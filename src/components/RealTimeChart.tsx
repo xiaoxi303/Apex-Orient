@@ -25,14 +25,19 @@ interface RealTimeChartProps {
   onChartReady?: (chart: IChartApi, series: ISeriesApi<"Candlestick", Time>) => void;
 }
 
-interface AlphaVantageCandle {
-  time: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
-}
+// Maps timeframes to Twelve Data intervals
+const mapTwelveDataInterval = (tf: string): string => {
+  switch (tf) {
+    case "1m": return "1min";
+    case "5m": return "5min";
+    case "15m": return "15min";
+    case "1h": return "1h";
+    case "4h": return "4h";
+    case "1d":
+    default:
+      return "1day";
+  }
+};
 
 export const RealTimeChart: React.FC<RealTimeChartProps> = ({
   symbol,
@@ -43,23 +48,19 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   
-  // Use typed references for Candlestick and Histogram Series
   const seriesRef = useRef<ISeriesApi<"Candlestick", Time> | null>(null);
   const volumeSeriesRef = useRef<ISeriesApi<"Histogram", Time> | null>(null);
   
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   
-  // Custom price line and caching refs
   const customPriceLineRef = useRef<IPriceLine | null>(null);
   const lastBarRef = useRef<{ time: number; open: number; high: number; low: number; close: number } | null>(null);
 
-  // Load state tracking to synchronize async data fetches with ticking events
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
 
   const theme = useStockStore((s) => s.theme);
   const isRefreshing = useStockStore((s) => s.isRefreshing);
   
-  // Read calibrated real-time price from the Zustand store
   const currentPrice = useStockStore((s) => s.stocks[symbol]?.price);
 
   const getChartColors = useCallback(
@@ -77,7 +78,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
     []
   );
 
-  // Helper fallback to fill chart canvas dynamically in offline/sandbox/error states
+  // Fallback to mock data in case Twelve Data rate-limits or fails
   const loadFallbackMockData = useCallback(
     (
       candleSeries: ISeriesApi<"Candlestick", Time>,
@@ -107,7 +108,6 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       }));
       volumeSeries.setData(volumeData);
 
-      // Cache the last mock bar for real-time updates
       const lastBar = bars[bars.length - 1];
       const lastBarTime = typeof lastBar.time === "number"
         ? lastBar.time
@@ -128,79 +128,107 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
     [symbol, timeframe]
   );
 
-  // Dynamic K-line history loading logic querying Alpha Vantage API proxy
+  // Direct Twelve Data Time Series loader
   const loadHistoryData = useCallback(
     async (
       chart: IChartApi,
       candleSeries: ISeriesApi<"Candlestick", Time>,
       volumeSeries: ISeriesApi<"Histogram", Time>
     ) => {
-      setIsHistoryLoaded(false); // Reset loading state
+      setIsHistoryLoaded(false);
       const isDark = theme === "dark";
       const colors = getChartColors(isDark);
 
+      const twelveApiKey = useStockStore.getState().twelveDataApiKey || "demo";
+      const mappedInterval = mapTwelveDataInterval(timeframe);
+
       try {
-        console.log(`[Candle API] Fetching history candles for: ${symbol} (${timeframe})`);
+        console.log(`[Twelve Data Chart API] Fetching direct time series: symbol=${symbol}, interval=${mappedInterval}`);
         
-        const res = await fetch(
-          `/api/stock/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
+        // Fetch from Twelve Data with UTC timezone parameter to prevent local timezone shifts
+        const url = `https://api.twelvedata.com/time_series?symbol=${encodeURIComponent(
+          symbol
+        )}&interval=${mappedInterval}&outputsize=500&timezone=UTC&apikey=${twelveApiKey}`;
+
+        const res = await fetch(url);
         const json = await res.json();
 
-        if (json.success && Array.isArray(json.result) && json.result.length > 0) {
-          const rawCandles = json.result as AlphaVantageCandle[];
-          console.log("[Candle API] Received raw candle list:", rawCandles);
+        if (json.status === "ok" && Array.isArray(json.values) && json.values.length > 0) {
+          console.log(`[Twelve Data Chart API] Received ${json.values.length} bars successfully.`);
 
-          // Standardize dates (formatted as YYYY-MM-DD strings for daily, unix seconds for intraday)
-          const formattedBars = rawCandles.map((bar: AlphaVantageCandle) => ({
-            time: (timeframe === "1d"
-              ? new Date(bar.time * 1000).toISOString().split("T")[0]
-              : bar.time) as Time,
-            open: bar.open,
-            high: bar.high,
-            low: bar.low,
-            close: bar.close,
-          }));
+          interface TwelveDataBar {
+            datetime: string;
+            open: string;
+            high: string;
+            low: string;
+            close: string;
+            volume: string;
+          }
 
-          console.log("[Mapped State Data] Mapped K-line history for TradingView:", formattedBars);
+          // Format to TradingView requirements
+          const formattedBars = json.values.map((item: TwelveDataBar) => {
+            let timeVal: Time;
+            if (timeframe === "1d") {
+              timeVal = item.datetime.split(" ")[0]; // YYYY-MM-DD
+            } else {
+              timeVal = Math.floor(new Date(item.datetime + "Z").getTime() / 1000) as Time;
+            }
 
-          // Set candlestick series data
+            return {
+              time: timeVal,
+              open: parseFloat(item.open),
+              high: parseFloat(item.high),
+              low: parseFloat(item.low),
+              close: parseFloat(item.close),
+            };
+          }).reverse(); // ⚡ Twelve Data returns newest-first, MUST reverse to oldest-first
+
           candleSeries.setData(formattedBars);
 
-          // Set volume series data
-          const volumeData = rawCandles.map((bar: AlphaVantageCandle) => ({
-            time: (timeframe === "1d"
-              ? new Date(bar.time * 1000).toISOString().split("T")[0]
-              : bar.time) as Time,
-            value: bar.volume,
-            color: bar.close >= bar.open ? colors.volumeUp : colors.volumeDown,
-          }));
+          const volumeData = json.values.map((item: TwelveDataBar) => {
+            let timeVal: Time;
+            if (timeframe === "1d") {
+              timeVal = item.datetime.split(" ")[0]; // YYYY-MM-DD
+            } else {
+              timeVal = Math.floor(new Date(item.datetime + "Z").getTime() / 1000) as Time;
+            }
+
+            return {
+              time: timeVal,
+              value: parseFloat(item.volume || "0"),
+              color: parseFloat(item.close) >= parseFloat(item.open) ? colors.volumeUp : colors.volumeDown,
+            };
+          }).reverse();
+
           volumeSeries.setData(volumeData);
           chart.timeScale().fitContent();
 
-          // Cache the last historical bar for real-time updates reference (normalize daily timestamp)
-          const lastBar = rawCandles[rawCandles.length - 1];
-          const lastBarNormalizedTime = timeframe === "1d"
-            ? Math.floor(new Date(new Date(lastBar.time * 1000).toISOString().split("T")[0] + "T00:00:00Z").getTime() / 1000)
-            : lastBar.time;
+          // Cache last historical bar
+          const lastBar = formattedBars[formattedBars.length - 1];
+          let lastBarTime = 0;
+          if (typeof lastBar.time === "string") {
+            lastBarTime = Math.floor(new Date(lastBar.time + "T00:00:00Z").getTime() / 1000);
+          } else {
+            lastBarTime = lastBar.time;
+          }
 
           lastBarRef.current = {
-            time: lastBarNormalizedTime,
+            time: lastBarTime,
             open: lastBar.open,
             high: lastBar.high,
             low: lastBar.low,
             close: lastBar.close,
           };
-          setIsHistoryLoaded(true); // Mark loaded successfully
+          setIsHistoryLoaded(true);
         } else {
           console.warn(
-            `[Candle API] History API failed or returned empty: ${json.error || "No data"}. Employing mock fallback.`
+            `[Twelve Data Chart API] API status non-ok: ${json.message || "No data"}. Employing mock fallback.`
           );
           loadFallbackMockData(candleSeries, volumeSeries, colors);
           setIsHistoryLoaded(true);
         }
       } catch (err) {
-        console.error("[Candle API] Failed to load history candles from backend:", err);
+        console.error("[Twelve Data Chart API] Failed to fetch time series:", err);
         loadFallbackMockData(candleSeries, volumeSeries, colors);
         setIsHistoryLoaded(true);
       }
@@ -216,7 +244,6 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
     const isDark = theme === "dark";
     const colors = getChartColors(isDark);
 
-    // Read actual pixel dimensions from the DOM before creating the chart
     const initWidth = container.clientWidth || container.offsetWidth || 600;
     const initHeight = container.clientHeight || container.offsetHeight || 400;
 
@@ -262,7 +289,6 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       handleScale: { mouseWheel: true, pinch: true },
     });
 
-    // Candlestick series (v5 API) - Hide default price line to prevent history sticking
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: colors.upColor,
       downColor: colors.downColor,
@@ -273,7 +299,6 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       priceLineVisible: false, 
     });
 
-    // Volume histogram series (v5 API)
     const volumeSeries = chart.addSeries(HistogramSeries, {
       color: colors.volumeUp,
       priceFormat: { type: "volume" },
@@ -284,15 +309,12 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       scaleMargins: { top: 0.85, bottom: 0 },
     });
 
-    // Assign refs immediately
     chartRef.current = chart;
     seriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
 
-    // Load initial historical data
     loadHistoryData(chart, candleSeries, volumeSeries);
 
-    // Crosshair callback
     if (onCrosshairMove) {
       chart.subscribeCrosshairMove((param) => {
         if (param.time) {
@@ -310,7 +332,6 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       onChartReady(chart, candleSeries);
     }
 
-    // ResizeObserver — always feed real pixel values to the chart
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const w = entry.contentRect.width || container.clientWidth;
@@ -330,14 +351,14 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       chartRef.current = null;
       seriesRef.current = null;
       volumeSeriesRef.current = null;
-      customPriceLineRef.current = null; // Clean up the custom price line reference
-      lastBarRef.current = null; // Clean up last bar cache
-      setIsHistoryLoaded(false); // Reset load state on unmount
+      customPriceLineRef.current = null; 
+      lastBarRef.current = null; 
+      setIsHistoryLoaded(false); 
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, timeframe]);
 
-  // Sync theme changes without re-creating chart
+  // Sync theme changes
   useEffect(() => {
     const chart = chartRef.current;
     const series = seriesRef.current;
@@ -381,7 +402,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
     }
   }, [theme, getChartColors]);
 
-  // Trigger K-line re-fetch when manual force refresh is activated in the header toolbar
+  // Handle force refresh
   useEffect(() => {
     const chart = chartRef.current;
     const candleSeries = seriesRef.current;
@@ -400,7 +421,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
     if (!customPriceLineRef.current) {
       customPriceLineRef.current = series.createPriceLine({
         price: currentPrice,
-        color: "#ef4444", // Red horizontal line matching the Liquid Glass theme
+        color: "#ef4444", 
         lineWidth: 1,
         lineStyle: 2, // Dashed
         axisLabelVisible: true,
@@ -413,14 +434,13 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
     }
   }, [currentPrice, isHistoryLoaded]);
 
-  // Manage real-time candlestick updates (Today's floating bar ticking close price)
+  // Manage real-time candlestick updates (ticks close price)
   useEffect(() => {
     const series = seriesRef.current;
     if (!series || !isHistoryLoaded || currentPrice === undefined || currentPrice === null) return;
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     
-    // Calculate starting Unix bound for the current timeframe bar
     const getBarTime = (tf: string, timeSeconds: number) => {
       switch (tf) {
         case "1m": return Math.floor(timeSeconds / 60) * 60;
@@ -430,7 +450,6 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
         case "4h": return Math.floor(timeSeconds / 14400) * 14400;
         case "1d":
         default:
-          // Align to New York timezone's midnight to get the correct daily date
           const nyDateStr = new Date(timeSeconds * 1000).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
           return Math.floor(new Date(nyDateStr + "T00:00:00Z").getTime() / 1000);
       }
@@ -447,7 +466,6 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
     };
 
     if (lastBar && lastBar.time === targetTime) {
-      // Update the existing real-time bar with the new high/low and close ticks
       updatedBar = {
         time: (timeframe === "1d"
           ? new Date(targetTime * 1000).toISOString().split("T")[0]
@@ -458,7 +476,6 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
         close: currentPrice,
       };
     } else {
-      // Append a brand new real-time bar for the new interval session
       const openPrice = lastBar ? lastBar.close : currentPrice;
       updatedBar = {
         time: (timeframe === "1d"
@@ -473,7 +490,6 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
 
     series.update(updatedBar as CandlestickData<Time>);
     
-    // Cache the updated bar state for subsequent ticks comparison
     lastBarRef.current = {
       time: targetTime,
       open: updatedBar.open,
