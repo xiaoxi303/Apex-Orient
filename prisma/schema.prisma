@@ -1,0 +1,25 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Drawing {
+  id          String   @id @default(uuid())
+  symbol      String
+  timeframe   String
+  drawingData Json     // Stores JSON structures of lines coordinates, types, colors, etc.
+  updatedAt   DateTime @updatedAt
+
+  @@unique([symbol, timeframe])
+  @@index([symbol, timeframe])
+}
+
+model AdminSetting {
+  key       String   @id
+  value     String   @db.Text // Text type for serialized ticker pools or news briefs
+  updatedAt DateTime @updatedAt
+}
