@@ -104,33 +104,39 @@ const debounceTimeouts: Record<string, NodeJS.Timeout> = {};
 // ─── Default Fallback Stocks ────────────────────────────────
 const defaultStocks: Record<string, Stock[]> = {
   Tech: [
-    { symbol: "AAPL", name: "Apple Inc.", price: 178.53, change: 1.42, changePercent: 0.8 },
-    { symbol: "MSFT", name: "Microsoft Corp.", price: 415.50, change: -2.35, changePercent: -0.56 },
-    { symbol: "NVDA", name: "NVIDIA Corp.", price: 875.12, change: 18.45, changePercent: 2.15 },
-    { symbol: "TSLA", name: "Tesla Inc.", price: 172.98, change: -4.12, changePercent: -2.33 },
-    { symbol: "GOOGL", name: "Alphabet Inc.", price: 151.60, change: 0.95, changePercent: 0.63 },
-    { symbol: "META", name: "Meta Platforms", price: 495.22, change: 5.10, changePercent: 1.04 },
+    { symbol: "AAPL", name: "Apple Inc.", price: 0, change: 0, changePercent: 0 },
+    { symbol: "MSFT", name: "Microsoft Corp.", price: 0, change: 0, changePercent: 0 },
+    { symbol: "NVDA", name: "NVIDIA Corp.", price: 0, change: 0, changePercent: 0 },
+    { symbol: "TSLA", name: "Tesla Inc.", price: 0, change: 0, changePercent: 0 },
+    { symbol: "GOOGL", name: "Alphabet Inc.", price: 0, change: 0, changePercent: 0 },
+    { symbol: "META", name: "Meta Platforms", price: 0, change: 0, changePercent: 0 },
   ],
   Crypto: [
-    { symbol: "BTC/USD", name: "Bitcoin / USD", price: 67250.00, change: 1250.00, changePercent: 1.89 },
-    { symbol: "ETH/USD", name: "Ethereum / USD", price: 3540.50, change: -45.20, changePercent: -1.26 },
-    { symbol: "SOL/USD", name: "Solana / USD", price: 148.25, change: 8.75, changePercent: 6.27 },
-    { symbol: "DOGE/USD", name: "Dogecoin / USD", price: 0.142, change: 0.008, changePercent: 5.97 },
+    { symbol: "BTC/USD", name: "Bitcoin / USD", price: 0, change: 0, changePercent: 0 },
+    { symbol: "ETH/USD", name: "Ethereum / USD", price: 0, change: 0, changePercent: 0 },
+    { symbol: "SOL/USD", name: "Solana / USD", price: 0, change: 0, changePercent: 0 },
+    { symbol: "DOGE/USD", name: "Dogecoin / USD", price: 0, change: 0, changePercent: 0 },
   ],
   Indices: [
-    { symbol: "SPY", name: "SPDR S&P 500 ETF", price: 512.85, change: 2.10, changePercent: 0.41 },
-    { symbol: "QQQ", name: "Invesco QQQ Trust", price: 438.60, change: 1.22, changePercent: 0.28 },
-    { symbol: "DIA", name: "SPDR Dow Jones ETF", price: 389.90, change: -0.85, changePercent: -0.22 },
-    { symbol: "IWM", name: "iShares Russell 2000 ETF", price: 202.15, change: 2.45, changePercent: 1.23 },
+    { symbol: "SPY", name: "SPDR S&P 500 ETF", price: 0, change: 0, changePercent: 0 },
+    { symbol: "QQQ", name: "Invesco QQQ Trust", price: 0, change: 0, changePercent: 0 },
+    { symbol: "DIA", name: "SPDR Dow Jones ETF", price: 0, change: 0, changePercent: 0 },
+    { symbol: "IWM", name: "iShares Russell 2000 ETF", price: 0, change: 0, changePercent: 0 },
   ],
 };
 
-function formatYahooSymbol(symbol: string): string {
-  const clean = symbol.toUpperCase();
-  if (clean.includes("/") && !clean.includes("BTC") && !clean.includes("ETH") && !clean.includes("SOL") && !clean.includes("DOGE")) {
-    return clean.replace("/", "") + "=X";
+function formatTwelveDataSymbol(symbol: string, enabled: boolean): string {
+  if (!enabled) return symbol;
+  const nasdaqTickers = ["AAPL", "MSFT", "NVDA", "TSLA", "GOOGL", "META", "AMZN", "NFLX", "QQQ"];
+  const nyseTickers = ["DIA", "IWM"];
+  const upper = symbol.toUpperCase();
+  if (nasdaqTickers.includes(upper)) {
+    return `${upper}:NASDAQ`;
   }
-  return clean.replace("/", "-");
+  if (nyseTickers.includes(upper)) {
+    return `${upper}:NYSE`;
+  }
+  return symbol;
 }
 
 const STOCK_NAMES: Record<string, string> = {
@@ -161,7 +167,7 @@ const STOCK_NAMES: Record<string, string> = {
   "CHF/USD": "Swiss Franc / US Dollar",
 };
 
-const BASE_PRICES: Record<string, number> = {
+const FALLBACK_PRICES: Record<string, number> = {
   AAPL: 178.53,
   MSFT: 415.50,
   NVDA: 875.12,
@@ -407,49 +413,30 @@ export const useStockStore = create<StockState>((set, get) => ({
     }, 1000);
   },
 
-  // ─── Yahoo Finance single price fetch (real-time injection) ───
+  // ─── Twelve Data single price fetch ───
   fetchSelectedStockPrice: async (symbol: string) => {
+    const { twelveDataApiKey, smartSymbolSwitch } = get();
+    const apiKey = twelveDataApiKey || "demo";
     const cleanSymbol = symbol.toUpperCase() === "APPLE" ? "AAPL" : symbol;
-    const yahooSymbol = formatYahooSymbol(cleanSymbol);
+    const formatted = formatTwelveDataSymbol(cleanSymbol, smartSymbolSwitch);
 
     try {
-      console.log(`[Yahoo Finance API] Fetching real-time quote for: ${yahooSymbol}`);
+      console.log(`[Twelve Data API] Fetching single price for: ${formatted}`);
       const res = await fetch(
-        `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(yahooSymbol)}`,
-        {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-          },
-        }
+        `https://api.twelvedata.com/price?symbol=${encodeURIComponent(formatted)}&apikey=${apiKey}`
       );
       const data = await res.json();
-      const result = data?.quoteResponse?.result?.[0];
 
-      if (!result) {
-        console.error(`[Yahoo Finance API] Failed to extract quote for ${yahooSymbol}`);
+      if (data.status === "error" || !data.price) {
+        console.error("[Twelve Data API] Price API error:", data.message);
         return;
       }
 
-      const marketState = result.marketState;
-      let price = result.regularMarketPrice !== undefined ? parseFloat(result.regularMarketPrice) : 0.0;
-      let change = result.regularMarketChange !== undefined ? parseFloat(result.regularMarketChange) : 0.0;
-      let changePercent = result.regularMarketChangePercent !== undefined ? parseFloat(result.regularMarketChangePercent) : 0.0;
-
-      // Pre/Post market calibration overrides
-      if ((marketState === "POST" || marketState === "CLOSED") && result.postMarketPrice !== undefined) {
-        price = parseFloat(result.postMarketPrice);
-        change = result.postMarketChange !== undefined ? parseFloat(result.postMarketChange) : change;
-        changePercent = result.postMarketChangePercent !== undefined ? parseFloat(result.postMarketChangePercent) : changePercent;
-      } else if (marketState === "PRE" && result.preMarketPrice !== undefined) {
-        price = parseFloat(result.preMarketPrice);
-        change = result.preMarketChange !== undefined ? parseFloat(result.preMarketChange) : change;
-        changePercent = result.preMarketChangePercent !== undefined ? parseFloat(result.preMarketChangePercent) : changePercent;
-      }
-
-      get().setStockPrice(cleanSymbol, price, change, changePercent);
+      const realPrice = parseFloat(data.price);
+      // Force atomic overwrite into watchlists, selectedStock, and stocks
+      get().setStockPrice(cleanSymbol, realPrice, 0, 0);
     } catch (err) {
-      console.error(`[Yahoo Finance API] Failed to fetch price for ${cleanSymbol}:`, err);
+      console.error(`[Twelve Data API] Failed to fetch price for ${cleanSymbol}:`, err);
     }
   },
 
@@ -511,7 +498,7 @@ export const useStockStore = create<StockState>((set, get) => ({
     try {
       const res = await fetch("/api/admin/config?key=ticker_pool");
       const data = await res.json();
-      let tickers = Object.keys(BASE_PRICES); // Fallback defaults
+      let tickers = Object.keys(FALLBACK_PRICES); // Fallback defaults
 
       if (data.success && data.value) {
         try {
@@ -533,12 +520,11 @@ export const useStockStore = create<StockState>((set, get) => ({
 
       tickers.forEach((symbol) => {
         const name = STOCK_NAMES[symbol] || `${symbol} Asset`;
-        const basePrice = BASE_PRICES[symbol] || 100.0;
 
         const stockItem: Stock = {
           symbol,
           name,
-          price: basePrice,
+          price: 0.0,
           change: 0.0,
           changePercent: 0.0,
         };
