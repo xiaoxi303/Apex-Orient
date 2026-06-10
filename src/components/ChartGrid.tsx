@@ -6,6 +6,7 @@ import { GlassCard } from "./GlassCard";
 import { RealTimeChart } from "./RealTimeChart";
 import { ChartHUD } from "./ChartHUD";
 import { DrawingOverlay } from "./DrawingOverlay";
+import { RefreshButton } from "./RefreshButton";
 import { ChevronDown, Activity, Maximize2 } from "lucide-react";
 import { cn } from "@/utils/cn";
 import type { Timeframe } from "@/data/mockOHLCV";
@@ -190,7 +191,8 @@ const ChartPane: React.FC<ChartPaneProps> = ({
               {stock.changePercent}%)
             </span>
           </div>
-          <div className="flex gap-1 border-l border-black/5 dark:border-white/5 pl-3">
+          <div className="flex items-center gap-1.5 border-l border-black/5 dark:border-white/5 pl-3">
+            <RefreshButton symbol={stock.symbol} timeframe={timeframe} />
             <button className="p-1 rounded hover:bg-black/5 dark:hover:bg-white/5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition-colors">
               <Activity size={12} />
             </button>

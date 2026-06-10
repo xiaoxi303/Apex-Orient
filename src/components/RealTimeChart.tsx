@@ -13,7 +13,6 @@ import type {
   ISeriesApi,
   CandlestickData,
   Time,
-  SeriesType,
 } from "lightweight-charts";
 import { useStockStore } from "@/store/useStockStore";
 import { generateMockOHLCV, Timeframe } from "@/data/mockOHLCV";
@@ -22,7 +21,16 @@ interface RealTimeChartProps {
   symbol: string;
   timeframe: Timeframe;
   onCrosshairMove?: (time: Time | null, price: number | null) => void;
-  onChartReady?: (chart: IChartApi, series: ISeriesApi<SeriesType, Time>) => void;
+  onChartReady?: (chart: IChartApi, series: ISeriesApi<"Candlestick", Time>) => void;
+}
+
+interface AlphaVantageCandle {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
 }
 
 export const RealTimeChart: React.FC<RealTimeChartProps> = ({
@@ -33,9 +41,15 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
-  const seriesRef = useRef<ISeriesApi<SeriesType, Time> | null>(null);
+  
+  // Use typed references for Candlestick and Histogram Series
+  const seriesRef = useRef<ISeriesApi<"Candlestick", Time> | null>(null);
+  const volumeSeriesRef = useRef<ISeriesApi<"Histogram", Time> | null>(null);
+  
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  
   const theme = useStockStore((s) => s.theme);
+  const isRefreshing = useStockStore((s) => s.isRefreshing);
 
   const getChartColors = useCallback(
     (isDark: boolean) => ({
@@ -52,7 +66,85 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
     []
   );
 
-  // Initialize chart
+  // Helper fallback to fill chart canvas dynamically in offline/sandbox/error states
+  const loadFallbackMockData = useCallback(
+    (
+      candleSeries: ISeriesApi<"Candlestick", Time>,
+      volumeSeries: ISeriesApi<"Histogram", Time>,
+      colors: ReturnType<typeof getChartColors>
+    ) => {
+      const bars = generateMockOHLCV(symbol, timeframe, 200);
+      candleSeries.setData(bars as CandlestickData<Time>[]);
+
+      const volumeData = bars.map((bar) => ({
+        time: bar.time,
+        value: bar.volume,
+        color: bar.close >= bar.open ? colors.volumeUp : colors.volumeDown,
+      }));
+      volumeSeries.setData(volumeData);
+    },
+    [symbol, timeframe]
+  );
+
+  // Dynamic K-line history loading logic querying Alpha Vantage API proxy
+  const loadHistoryData = useCallback(
+    async (
+      chart: IChartApi,
+      candleSeries: ISeriesApi<"Candlestick", Time>,
+      volumeSeries: ISeriesApi<"Histogram", Time>
+    ) => {
+      const isDark = theme === "dark";
+      const colors = getChartColors(isDark);
+
+      try {
+        console.log(`[Alpha Vantage Raw Data] Fetching history candles for: ${symbol} (${timeframe})`);
+        
+        const res = await fetch(
+          `/api/stock/candles?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
+        );
+        const json = await res.json();
+
+        if (json.success && Array.isArray(json.result) && json.result.length > 0) {
+          const rawCandles = json.result as AlphaVantageCandle[];
+          console.log("[Alpha Vantage Raw Data] Received raw candle list:", rawCandles);
+
+          // Standardize dates to Unix seconds (TradingView expected format)
+          const formattedBars = rawCandles.map((bar: AlphaVantageCandle) => ({
+            time: bar.time as Time,
+            open: bar.open,
+            high: bar.high,
+            low: bar.low,
+            close: bar.close,
+          }));
+
+          console.log("[Mapped State Data] Mapped K-line history for TradingView:", formattedBars);
+
+          // Set candlestick series data
+          candleSeries.setData(formattedBars);
+
+          // Set volume series data
+          const volumeData = rawCandles.map((bar: AlphaVantageCandle) => ({
+            time: bar.time as Time,
+            value: bar.volume,
+            color: bar.close >= bar.open ? colors.volumeUp : colors.volumeDown,
+          }));
+          volumeSeries.setData(volumeData);
+          chart.timeScale().fitContent();
+        } else {
+          console.warn(
+            `[Alpha Vantage Raw Data] History API failed or returned empty: ${json.error || "No data"}. Employing mock fallback.`
+          );
+          loadFallbackMockData(candleSeries, volumeSeries, colors);
+        }
+      } catch (err) {
+        console.error("[Alpha Vantage Raw Data] Failed to load history candles from backend:", err);
+        loadFallbackMockData(candleSeries, volumeSeries, colors);
+      }
+    },
+    [symbol, timeframe, theme, getChartColors, loadFallbackMockData]
+  );
+
+  // Initialize chart canvas
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -127,70 +219,13 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       scaleMargins: { top: 0.85, bottom: 0 },
     });
 
-    // Dynamic K-line history loading logic
-    const loadHistoryData = async () => {
-      try {
-        console.log(`[Finnhub Raw Data] Fetching history candles for: ${symbol} (${timeframe})`);
-        const res = await fetch(
-          `/api/stock/history?symbol=${encodeURIComponent(symbol)}&timeframe=${encodeURIComponent(timeframe)}`
-        );
-        const json = await res.json();
-
-        if (json.success && json.data && json.data.s === "ok") {
-          const rawCandles = json.data;
-          console.log("[Finnhub Raw Data] WebSocket/REST raw candle arrays:", rawCandles);
-
-          // Restructure array-grouped Finnhub candles into standard TradingView OHLC items
-          const formattedBars = rawCandles.t.map((timestamp: number, idx: number) => ({
-            time: timestamp as Time, // Unix timestamp in seconds
-            open: rawCandles.o[idx],
-            high: rawCandles.h[idx],
-            low: rawCandles.l[idx],
-            close: rawCandles.c[idx],
-          }));
-
-          console.log("[Mapped State Data] Mapped K-line history for TradingView:", formattedBars);
-
-          // Set candlestick series data
-          candleSeries.setData(formattedBars);
-
-          // Set volume series data
-          const volumeData = formattedBars.map((bar: { time: Time; open: number; close: number }, idx: number) => ({
-            time: bar.time,
-            value: rawCandles.v[idx],
-            color: bar.close >= bar.open ? colors.volumeUp : colors.volumeDown,
-          }));
-          volumeSeries.setData(volumeData);
-          chart.timeScale().fitContent();
-        } else {
-          console.warn("[Finnhub Raw Data] History API empty or missing credentials, employing mock data generator.");
-          loadFallbackMockData();
-        }
-      } catch (err) {
-        console.error("[Finnhub Raw Data] Failed to load history candles from backend:", err);
-        loadFallbackMockData();
-      }
-    };
-
-    // Helper fallback to fill chart canvas dynamically in offline/sandbox states
-    const loadFallbackMockData = () => {
-      const bars = generateMockOHLCV(symbol, timeframe, 200);
-      candleSeries.setData(bars as CandlestickData<Time>[]);
-
-      const volumeData = bars.map((bar) => ({
-        time: bar.time,
-        value: bar.volume,
-        color: bar.close >= bar.open ? colors.volumeUp : colors.volumeDown,
-      }));
-      volumeSeries.setData(volumeData);
-      chart.timeScale().fitContent();
-    };
-
-    // Trigger loader
-    loadHistoryData();
-
+    // Assign refs immediately
     chartRef.current = chart;
     seriesRef.current = candleSeries;
+    volumeSeriesRef.current = volumeSeries;
+
+    // Load initial historical data
+    loadHistoryData(chart, candleSeries, volumeSeries);
 
     // Crosshair callback
     if (onCrosshairMove) {
@@ -229,6 +264,7 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       chart.remove();
       chartRef.current = null;
       seriesRef.current = null;
+      volumeSeriesRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbol, timeframe]);
@@ -276,6 +312,17 @@ export const RealTimeChart: React.FC<RealTimeChartProps> = ({
       });
     }
   }, [theme, getChartColors]);
+
+  // Trigger K-line re-fetch when manual force refresh is activated in the header toolbar
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candleSeries = seriesRef.current;
+    const volumeSeries = volumeSeriesRef.current;
+
+    if (isRefreshing && chart && candleSeries && volumeSeries) {
+      loadHistoryData(chart, candleSeries, volumeSeries);
+    }
+  }, [isRefreshing, loadHistoryData]);
 
   return (
     <div

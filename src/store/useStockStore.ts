@@ -72,6 +72,10 @@ interface StockState {
   searchOpen: boolean;
   setSearchOpen: (open: boolean) => void;
 
+  // Manual Force-Refresh Actions (Stage 3 Extension)
+  isRefreshing: boolean;
+  refreshCurrentStock: (symbol: string, timeframe: Timeframe) => Promise<void>;
+
   // Stage 3 Full-Stack & Live sync actions
   loadDrawings: (symbol: string, timeframe: Timeframe) => Promise<void>;
   saveDrawingsDebounced: (symbol: string, timeframe: Timeframe, drawings: DrawingItem[]) => void;
@@ -429,4 +433,26 @@ export const useStockStore = create<StockState>((set, get) => ({
   // Global search modal controls
   searchOpen: false,
   setSearchOpen: (open) => set({ searchOpen: open }),
+
+  // Manual Force-Refresh Actions (Stage 3 Extension)
+  isRefreshing: false,
+  refreshCurrentStock: async (symbol, timeframe) => {
+    set({ isRefreshing: true });
+    try {
+      console.log(`[Store Action] Initiated force-refresh for: ${symbol} (${timeframe})`);
+      
+      // 1. Re-fetch K-line drawings from database
+      await get().loadDrawings(symbol, timeframe);
+
+      // 2. Reload ticker pool lists and dynamic settings
+      await get().loadSettingsAndWatchlist();
+      
+    } catch (err) {
+      console.error("[Store Action] Force-refresh execution failed:", err);
+    } finally {
+      // Visual feedback buffer so user notices the spinning icon
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      set({ isRefreshing: false });
+    }
+  },
 }));
