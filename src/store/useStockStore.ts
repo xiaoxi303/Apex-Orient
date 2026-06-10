@@ -356,15 +356,30 @@ export const useStockStore = create<StockState>((set, get) => ({
     }, 1000);
   },
 
-  // ─── Twelve Data single price fetch ───
+  // ─── Twelve Data single price fetch (with hot-patch key) ───
   fetchSelectedStockPrice: async (symbol: string) => {
     if (!symbol) return;
     const cleanSymbol = symbol.toUpperCase();
     const formattedSymbol = get().smartSymbolSwitch ? `${cleanSymbol}:NASDAQ` : cleanSymbol;
-    const apiKey = get().twelveDataApiKey;
+
+    // ⚡ Hot-patch: if key is missing in memory, fetch it on the spot
+    let apiKey = get().twelveDataApiKey;
+    if (!apiKey) {
+      try {
+        const keyRes = await fetch("/api/stock/twelve-key");
+        const keyData = await keyRes.json();
+        if (keyData.success && keyData.apiKey) {
+          apiKey = keyData.apiKey;
+          set({ twelveDataApiKey: apiKey });
+          console.log("[Twelve Data] Hot-patched API key into store.");
+        }
+      } catch (e) {
+        console.error("[Store] Failed to hot-fetch Twelve Data key:", e);
+      }
+    }
 
     if (!apiKey) {
-      console.warn("[Twelve Data] Missing API Key, skipped fetch.");
+      console.error("[Twelve Data API] Cannot fetch price — API Key is missing entirely!");
       return;
     }
 
@@ -377,18 +392,15 @@ export const useStockStore = create<StockState>((set, get) => ({
 
       if (data && data.price) {
         const price = parseFloat(data.price);
-        
-        // 2. 动态计算涨跌幅：由于免费限流，我们用最新现价减去本地默认基础价或合理的昨日收盘价
-        const basePrice = 178.53; // 作为临时的涨跌分水岭
+
+        const basePrice = 178.53;
         const change = parseFloat((price - basePrice).toFixed(2));
         const changePercent = parseFloat(((change / basePrice) * 100).toFixed(2));
 
-        console.log(`[Twelve Data API] Successfully grabbed price: ${price} for ${cleanSymbol}`);
-        
-        // 3. 强行原子化调取已有的 setStockPrice 更新全局状态
+        console.log(`[Twelve Data API] Injection success: ${price} for ${cleanSymbol}`);
         get().setStockPrice(cleanSymbol, price, change, changePercent);
       } else {
-        console.error("[Twelve Data API] Single price endpoint format mismatch:", data);
+        console.error("[Twelve Data API] Response payload error or rate limited:", data);
       }
     } catch (err) {
       console.error(`[Twelve Data API] Single price fetch failed for ${cleanSymbol}:`, err);
