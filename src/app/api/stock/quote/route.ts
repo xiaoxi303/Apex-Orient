@@ -6,6 +6,7 @@ export const dynamic = "force-dynamic";
  * GET /api/stock/quote
  * Serves as a secure backend proxy to query Yahoo Finance Quote API.
  * Maps Yahoo Finance fields to standard price, change, and changePercent keys.
+ * Dynamically overrides fields during Pre-Market and Post-Market trading sessions.
  * Standardizes incoming tickers (APPLE -> AAPL).
  * Query parameters: symbol (string)
  */
@@ -59,15 +60,34 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 4. Map the Yahoo Finance response values to standard keys
+    // 4. Extract marketState and initial baseline fields (Regular market hours)
+    const marketState = result.marketState;
+    
+    let price = result.regularMarketPrice !== undefined ? parseFloat(result.regularMarketPrice) : 0.0;
+    let change = result.regularMarketChange !== undefined ? parseFloat(result.regularMarketChange) : 0.0;
+    let changePercent = result.regularMarketChangePercent !== undefined ? parseFloat(result.regularMarketChangePercent) : 0.0;
+
+    // 5. Apply Pre-Market and Post-Market override calibration logic
+    if ((marketState === "POST" || marketState === "CLOSED") && result.postMarketPrice !== undefined) {
+      console.log(`[Quote API] Market state is ${marketState} (Post-Hours). Calibrating with post-market price: ${result.postMarketPrice}`);
+      price = parseFloat(result.postMarketPrice);
+      change = result.postMarketChange !== undefined ? parseFloat(result.postMarketChange) : change;
+      changePercent = result.postMarketChangePercent !== undefined ? parseFloat(result.postMarketChangePercent) : changePercent;
+    } else if (marketState === "PRE" && result.preMarketPrice !== undefined) {
+      console.log(`[Quote API] Market state is ${marketState} (Pre-Hours). Calibrating with pre-market price: ${result.preMarketPrice}`);
+      price = parseFloat(result.preMarketPrice);
+      change = result.preMarketChange !== undefined ? parseFloat(result.preMarketChange) : change;
+      changePercent = result.preMarketChangePercent !== undefined ? parseFloat(result.preMarketChangePercent) : changePercent;
+    } else {
+      console.log(`[Quote API] Market state is ${marketState} (Regular-Hours). Calibrating with regular-market price: ${price}`);
+    }
+
     const mappedResult = {
       symbol,
-      price: result.regularMarketPrice !== undefined ? parseFloat(result.regularMarketPrice) : 0.0,
-      change: result.regularMarketChange !== undefined ? parseFloat(result.regularMarketChange) : 0.0,
-      changePercent: result.regularMarketChangePercent !== undefined ? parseFloat(result.regularMarketChangePercent) : 0.0,
+      price,
+      change,
+      changePercent,
     };
-
-    console.log(`[Quote API] Successfully fetched Yahoo Finance quote for ${symbol}: price=${mappedResult.price}, change=${mappedResult.change} (${mappedResult.changePercent}%)`);
 
     return NextResponse.json({
       success: true,
