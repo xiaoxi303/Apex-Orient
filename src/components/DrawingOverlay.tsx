@@ -82,13 +82,18 @@ export const DrawingOverlay: React.FC<DrawingOverlayProps> = ({
     (point: DrawingPoint): { x: number; y: number } | null => {
       if (!chart || !series) return null;
 
-      const timeCoord = chart.timeScale().timeToCoordinate(point.time as Time);
+      let timeVal: Time = point.time as Time;
+      if (timeframe === "1d") {
+        timeVal = new Date(point.time * 1000).toISOString().split("T")[0];
+      }
+
+      const timeCoord = chart.timeScale().timeToCoordinate(timeVal);
       const priceCoord = series.priceToCoordinate(point.price);
 
       if (timeCoord === null || priceCoord === null) return null;
       return { x: timeCoord, y: priceCoord };
     },
-    [chart, series]
+    [chart, series, timeframe]
   );
 
   // Convert pixel to price/time
@@ -100,7 +105,19 @@ export const DrawingOverlay: React.FC<DrawingOverlayProps> = ({
       const price = series.coordinateToPrice(y);
 
       if (time === null || price === null) return null;
-      return { time: time as number, price };
+
+      let timeNum = 0;
+      if (typeof time === "string") {
+        timeNum = Math.floor(new Date(time).getTime() / 1000);
+      } else if (typeof time === "number") {
+        timeNum = time;
+      } else if (time && typeof time === "object") {
+        // BusinessDay object
+        const bd = time as { year: number; month: number; day: number };
+        timeNum = Math.floor(new Date(Date.UTC(bd.year, bd.month - 1, bd.day)).getTime() / 1000);
+      }
+
+      return { time: timeNum, price };
     },
     [chart, series]
   );
