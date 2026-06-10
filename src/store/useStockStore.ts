@@ -78,8 +78,7 @@ interface StockState {
   // Twelve Data direct frontend fetch actions
   twelveDataApiKey: string;
   setTwelveDataApiKey: (key: string) => void;
-  fetchWatchlistQuotes: () => Promise<void>;
-  fetchSingleQuote: (symbol: string) => Promise<void>;
+  fetchSelectedStockPrice: (symbol: string) => Promise<void>;
 
   // Admin Config settings synced to client store
   refreshInterval: number;
@@ -101,9 +100,6 @@ interface StockState {
 
 // ─── Debounce Timer Map ────────────────────────────────────
 const debounceTimeouts: Record<string, NodeJS.Timeout> = {};
-
-// ─── Global Interval Timer for Twelve Data quote updates ───
-let quoteIntervalTimer: NodeJS.Timeout | null = null;
 
 // ─── Default Fallback Stocks ────────────────────────────────
 const defaultStocks: Record<string, Stock[]> = {
@@ -269,7 +265,7 @@ export const useStockStore = create<StockState>((set, get) => ({
       return { selectedStock: targetStock, stocks: updatedStocks };
     });
     
-    get().fetchSingleQuote(targetSymbol);
+    get().fetchSelectedStockPrice(targetSymbol);
   },
 
   // Layout
@@ -284,7 +280,7 @@ export const useStockStore = create<StockState>((set, get) => ({
       return { paneStocks: updated };
     });
 
-    get().fetchSingleQuote(targetSymbol);
+    get().fetchSelectedStockPrice(targetSymbol);
   },
 
   // Timeframes
@@ -417,148 +413,33 @@ export const useStockStore = create<StockState>((set, get) => ({
     }, 1000);
   },
 
-  // ─── Twelve Data batch quote fetch ───
-  fetchWatchlistQuotes: async () => {
-    const { watchlists, twelveDataApiKey, smartSymbolSwitch } = get();
-    const apiKey = twelveDataApiKey || "demo";
-    
-    const symbolsSet = new Set<string>();
-    Object.values(watchlists).forEach((group) => {
-      group.forEach((stock) => {
-        symbolsSet.add(stock.symbol);
-      });
-    });
-    const symbols = Array.from(symbolsSet);
-    
-    if (symbols.length === 0) return;
-
-    // Apply standard exchange formatting if the smart switch is on
-    const formattedSymbolsList = symbols.map((s) => formatTwelveDataSymbol(s, smartSymbolSwitch));
-
-    try {
-      console.log(`[Twelve Data API] Fetching batch quotes for: ${formattedSymbolsList.join(",")}`);
-      const res = await fetch(
-        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(formattedSymbolsList.join(","))}&apikey=${apiKey}`
-      );
-      const data = await res.json();
-
-      if (data.status === "error") {
-        console.error("[Twelve Data API] Batch Quote API error:", data.message);
-        return;
-      }
-
-      const stocksUpdate: Record<string, { price: number; change: number; changePercent: number }> = {};
-
-      if (data.price) {
-        // Case A: Single item flat response
-        const pureSymbol = (data.symbol || symbols[0]).split(":")[0];
-        stocksUpdate[pureSymbol] = {
-          price: parseFloat(data.price),
-          change: parseFloat(data.change || "0"),
-          changePercent: parseFloat((data.percent_change || "0").replace("%", ""))
-        };
-      } else {
-        // Case B: Batch dictionary response with exchange key suffixes
-        Object.keys(data).forEach((rawKey) => {
-          const pureSymbol = rawKey.split(":")[0];
-          const item = data[rawKey];
-          if (item && item.price) {
-            stocksUpdate[pureSymbol] = {
-              price: parseFloat(item.price),
-              change: parseFloat(item.change || "0"),
-              changePercent: parseFloat((item.percent_change || "0").replace("%", ""))
-            };
-          }
-        });
-      }
-
-      // Responsive atomic state updates across stocks, watchlists, and selected stock
-      set((state) => {
-        const updatedStocks = { ...state.stocks };
-        const updatedWatchlists = { ...state.watchlists };
-        let updatedSelectedStock = { ...state.selectedStock };
-
-        Object.keys(stocksUpdate).forEach((sym) => {
-          if (updatedStocks[sym]) {
-            updatedStocks[sym] = {
-              ...updatedStocks[sym],
-              price: stocksUpdate[sym].price,
-              change: stocksUpdate[sym].change,
-              changePercent: stocksUpdate[sym].changePercent,
-            };
-          } else {
-            updatedStocks[sym] = {
-              symbol: sym,
-              name: STOCK_NAMES[sym] || `${sym} Asset`,
-              price: stocksUpdate[sym].price,
-              change: stocksUpdate[sym].change,
-              changePercent: stocksUpdate[sym].changePercent,
-            };
-          }
-
-          // Update lists in watchlist
-          Object.keys(updatedWatchlists).forEach((group) => {
-            updatedWatchlists[group] = updatedWatchlists[group].map((stock) => {
-              if (stock.symbol === sym) {
-                return {
-                  ...stock,
-                  price: stocksUpdate[sym].price,
-                  change: stocksUpdate[sym].change,
-                  changePercent: stocksUpdate[sym].changePercent,
-                };
-              }
-              return stock;
-            });
-          });
-
-          // Sync current selection
-          if (updatedSelectedStock.symbol === sym) {
-            updatedSelectedStock = {
-              ...updatedSelectedStock,
-              price: stocksUpdate[sym].price,
-              change: stocksUpdate[sym].change,
-              changePercent: stocksUpdate[sym].changePercent,
-            };
-          }
-        });
-
-        return {
-          stocks: updatedStocks,
-          watchlists: updatedWatchlists,
-          selectedStock: updatedSelectedStock,
-        };
-      });
-    } catch (err) {
-      console.error("[Twelve Data API] Failed to fetch batch watchlist quotes:", err);
-    }
-  },
-
-  // ─── Twelve Data single quote fetch ───
-  fetchSingleQuote: async (symbol: string) => {
+  // ─── Twelve Data single price fetch ───
+  fetchSelectedStockPrice: async (symbol: string) => {
     const { twelveDataApiKey, smartSymbolSwitch } = get();
     const apiKey = twelveDataApiKey || "demo";
+    const cleanSymbol = symbol.toUpperCase() === "APPLE" ? "AAPL" : symbol;
+    const formatted = formatTwelveDataSymbol(cleanSymbol, smartSymbolSwitch);
+
     try {
-      const formatted = formatTwelveDataSymbol(symbol, smartSymbolSwitch);
-      console.log(`[Twelve Data API] Fetching single quote for: ${formatted}`);
+      console.log(`[Twelve Data API] Fetching single price for: ${formatted}`);
       const res = await fetch(
-        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(formatted)}&apikey=${apiKey}`
+        `https://api.twelvedata.com/price?symbol=${encodeURIComponent(formatted)}&apikey=${apiKey}`
       );
       const data = await res.json();
 
       if (data.status === "error" || !data.price) {
-        console.error("[Twelve Data API] Single Quote API error:", data.message);
+        console.error("[Twelve Data API] Price API error:", data.message);
         return;
       }
 
-      const price = parseFloat(data.price || "0");
-      const change = parseFloat(data.change || "0");
-      const pctStr = data.percent_change || "0";
-      const changePercent = parseFloat(pctStr.replace("%", ""));
+      const price = parseFloat(data.price);
+      const base = BASE_PRICES[cleanSymbol] || price;
+      const change = price - base;
+      const changePercent = base !== 0 ? (change / base) * 100 : 0;
 
-      const cleanSymbol = (data.symbol || symbol).split(":")[0];
       get().setStockPrice(cleanSymbol, price, change, changePercent);
     } catch (err) {
-      console.error(`[Twelve Data API] Failed to fetch single quote for ${symbol}:`, err);
+      console.error(`[Twelve Data API] Failed to fetch price for ${cleanSymbol}:`, err);
     }
   },
 
@@ -686,26 +567,9 @@ export const useStockStore = create<StockState>((set, get) => ({
         }
       }
 
-      // Initial batch quote retrieval
-      await get().fetchWatchlistQuotes();
-
-      // Trigger single quote calibration for the selected stock
+      // Trigger single price fetch for selected stock on load
       if (nextSelected) {
-        get().fetchSingleQuote(nextSelected.symbol);
-      }
-
-      // ─── Heartbeat Mechanism Quotes Refresh Timer ───
-      if (typeof window !== "undefined") {
-        if (quoteIntervalTimer) {
-          clearInterval(quoteIntervalTimer);
-        }
-        console.log(`[Heartbeat] Initiating Twelve Data quotes refresh interval: ${intervalSecs}s. Smart Sleep: ${smartSleepEnabled}`);
-        quoteIntervalTimer = setInterval(() => {
-          if (get().smartSleep && document.hidden) {
-            return;
-          }
-          get().fetchWatchlistQuotes();
-        }, intervalSecs * 1000);
+        await get().fetchSelectedStockPrice(nextSelected.symbol);
       }
     } catch (err) {
       console.error("Failed to initialize dynamic watchlist from API:", err);
@@ -775,38 +639,14 @@ export const useStockStore = create<StockState>((set, get) => ({
       // 2. Reload ticker pool lists and dynamic settings
       await get().loadSettingsAndWatchlist();
       
-      // 3. Calibrate real-time price using Twelve Data single quote endpoint
-      await get().fetchSingleQuote(targetSymbol);
+      // 3. Calibrate real-time price using Twelve Data single price endpoint
+      await get().fetchSelectedStockPrice(targetSymbol);
     } catch (err) {
       console.error("[Store Action] Force-refresh execution failed:", err);
     } finally {
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      // 2-second throttle delay
+      await new Promise((resolve) => setTimeout(resolve, 2000));
       set({ isRefreshing: false });
     }
   },
 }));
-
-// ─── Visibility Change Listener for Smart Sleep Mode ───
-if (typeof window !== "undefined") {
-  document.addEventListener("visibilitychange", () => {
-    const store = useStockStore.getState();
-    const isSleep = store.smartSleep;
-    const interval = store.refreshInterval;
-
-    if (document.hidden) {
-      if (isSleep && quoteIntervalTimer) {
-        console.log("[Heartbeat] Smart Sleep: Tab hidden, clearing quote interval.");
-        clearInterval(quoteIntervalTimer);
-        quoteIntervalTimer = null;
-      }
-    } else {
-      if (isSleep && !quoteIntervalTimer) {
-        console.log("[Heartbeat] Smart Sleep: Tab active, resuming quote interval.");
-        store.fetchWatchlistQuotes();
-        quoteIntervalTimer = setInterval(() => {
-          store.fetchWatchlistQuotes();
-        }, interval * 1000);
-      }
-    }
-  });
-}
